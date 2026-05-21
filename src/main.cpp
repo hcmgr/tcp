@@ -8,6 +8,8 @@
 
 #include <event2/event.h>
 
+#include "engine.hpp"
+
 int createUdpSocket(const std::string& srcIp,
                     int srcPort,
                     const std::string& dstIp,
@@ -112,6 +114,7 @@ void do_consume(evutil_socket_t fd, short events, void *arg) {
 }
 
 void init() {
+    Engine& engine = Engine::getInstance();
     struct event_base *base;
     struct event *produceEvent;
     struct event *consumeEvent;
