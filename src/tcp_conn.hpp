@@ -17,13 +17,13 @@ public:
      *      - CONNECT ==> connect to already-listening peer
      * All other `connType`'s are invalid.
      * 
-     * Open is a blocking call.
+     * Blocking call, returns execution once connection fully established with peer.
      */
     static TcpConn* open(const std::string &srcIp, 
-                                         int srcPort, 
-                                         const std::string &destIp,
-                                         int destPort,
-                                         ConnType connType);
+                         int srcPort, 
+                         const std::string &destIp,
+                         int destPort,
+                         ConnType connType);
 
     /**
      * Read `n` bytes from stream into `buffer`.

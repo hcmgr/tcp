@@ -3,34 +3,34 @@
 #include <vector>
 #include <unordered_map>
 #include <format>
+#include <condition_variable>
+#include <mutex>
+#include <memory>
 
 #include <event2/event.h>
 
+#include "tcp_define.hpp"
 #include "tcp_conn.hpp"
+#include "stream.hpp"
 #include "utils.hpp"
 
-enum class State {
-    CLOSED,             // closed
-    LISTEN,             // listening for incoming connections
-    SYN_SENT,           // sent first SYN, waiting on its ACK
-    SYN_RECEIVED,       // received first SYN, should now send own SYN
-    ESTABLISHED,        // normal send/receive state
-    FIN_WAIT_1,         // sent first fin
-    CLOSE_WAIT,         // received first fin from peer
-    FIN_WAIT_2,         // sent first FIN, ACK'd by other
-    TIME_WAIT,          // received second fin from peer, wait 2 MSL to close
-    LAST_ACK,           // sent second fin, waiting on ACK
+struct PendingSegmentSend {
+};
+
+struct PendingAck {
+    // ackNum
+    // event id / handle of ACK-timeout event
 };
 
 struct Connection {
     // conection id, assigned by Engine, guaranteed unique within this process
-    int id;
+    int64_t id;
 
     // 4-tuple
-    const std::string &srcIp;
-    const int srcPort;
-    const std::string &destIp;
-    const int destPort;
+    std::string srcIp;
+    int srcPort;
+    std::string destIp;
+    int destPort;
 
     // udp socket fd
     int udpSocketFd;
@@ -38,24 +38,23 @@ struct Connection {
     // tcp-state-machine state of the connection
     State state;
 
-    // send buffer
-    std::vector<uint8_t> sendBuffer;
-    int64_t SND_UNA;
-    int64_t SND_NXT;
-    int64_t SND_WND;
+    // send stream
+    SendStream sendStream;
 
-    // recv buffer
-    std::vector<uint8_t> recvBuffer;
-    int64_t RCV_NXT;
-    int64_t RCV_WND;
+    // recv stream
+    RecvStream recvStream;
 
-    // re-tx data structure
+    // pending-read state
 
+    // pending-send state
+
+    // pending-ACK state
+
+    // TODO - re-transmission data structure
+
+    Connection();
 };
 
-/**
- * Global, singleton tcp engine.
- */
 class Engine {
 private:
     int64_t connectionIdGen;
@@ -66,6 +65,7 @@ private:
 
 private:
     Engine();
+    ~Engine();
     void eventLoop();
 
 public:
@@ -75,12 +75,29 @@ public:
     Engine& operator=(const Engine&) = delete;
 
 public:
-    int64_t open(const std::string &srcIp,
+    int64_t open(const std::string srcIp,
                   int srcPort, 
-                  const std::string &destIp,
+                  const std::string destIp,
                   int destPort,
                   ConnType connType);
     void read(int64_t cId, int n, std::vector<uint8_t> &buffer);
     void write(int64_t cId, int n, std::vector<uint8_t> &buffer);
     void close(int64_t cId);
+
+public:
+    void handleSegmentArrive(Connection *conn);
+
+private:
+    int createUdpSocket(const std::string& srcIp,
+                        int srcPort,
+                        const std::string& dstIp,
+                        int dstPort);
+    
+    
+    
 };
+
+//////////////////////////////////////////////////////////////////
+// Libevent callbacks
+//////////////////////////////////////////////////////////////////
+void libeventSegmentArrive(evutil_socket_t fd, short events, void* arg);
