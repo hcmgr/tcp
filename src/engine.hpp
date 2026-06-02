@@ -6,16 +6,15 @@
 #include <condition_variable>
 #include <mutex>
 #include <memory>
+#include <thread>
 
 #include <event2/event.h>
 
 #include "tcp_define.hpp"
 #include "tcp_conn.hpp"
-#include "stream.hpp"
+#include "send.hpp"
+#include "recv.hpp"
 #include "utils.hpp"
-
-struct PendingSegmentSend {
-};
 
 struct PendingAck {
     // ackNum
@@ -44,11 +43,9 @@ struct Connection {
     // recv stream
     RecvStream recvStream;
 
-    // pending-read state
+    // pending-read state (users sleeping read() calls waiting on available data)
 
-    // pending-send state
-
-    // pending-ACK state
+    // pending-ACK state (delayed ACK => piggyback ACKs onto other segments / ACKs)
 
     // TODO - re-transmission data structure
 
@@ -93,7 +90,9 @@ private:
                         const std::string& dstIp,
                         int dstPort);
     
-    
+    int handleHandshakeSyn(const Header &hdr);
+    int handleHandshakeSynAck(const Header &hdr);
+    int handleHandshakeAck(const Header &hdr);
     
 };
 

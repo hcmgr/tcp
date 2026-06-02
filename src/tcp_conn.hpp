@@ -7,6 +7,7 @@ enum class ConnType {
     LISTEN,
     CONNECT
 };
+std::string toString(ConnType connType);
 
 class TcpConn {
 public:
@@ -48,3 +49,4 @@ private:
 private:
     int64_t connectionId;
 };
+

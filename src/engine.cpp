@@ -16,16 +16,23 @@
 Connection::Connection() {}
 
 Engine::Engine()
-    : connectionIdGen(0)
+    : connectionIdGen(0) 
 {
     Log(INFO, "initialising engine");
     eventBase = event_base_new();
-    std::thread(eventLoop);
-    int bytesAvail;
+    thread = std::thread(&Engine::eventLoop, this);
+}
+
+Engine::~Engine() {
+    event_base_loopexit(eventBase, nullptr);
+    if (thread.joinable()) {
+        thread.join();
+    }
+    event_base_free(eventBase);
 }
 
 void Engine::eventLoop() {
-    event_base_dispatch(eventBase);
+    event_base_loop(eventBase, EVLOOP_NO_EXIT_ON_EMPTY);
 }
 
 Engine& Engine::getInstance() {
@@ -80,7 +87,7 @@ int64_t Engine::open(const std::string srcIp,
     } else if (connType == ConnType::CONNECT) {
         conn->state = State::CLOSED;
     } else {
-        Log(ERROR, std::format("incorrect connType: {}", connType));
+        Log(ERROR, std::format("incorrect connType: {}", toString(connType)));
         return -1;
     }
 
@@ -121,7 +128,7 @@ void Engine::close(int64_t cId) {
 //////////////////////////////////////////////////////////////////
 
 void Engine::handleSegmentArrive(Connection *conn) {
-    Log(INFO, std::format("segment arrive - state={}", conn->state));
+    Log(INFO, std::format("segment arrive - state={}", toString(conn->state)));
 
     // validate connection is valid and open
     if (!conn) {
@@ -134,9 +141,9 @@ void Engine::handleSegmentArrive(Connection *conn) {
         return;
     }
 
-    /**
-     * Read segment into intermediate buffer
-     */
+    //
+    // Read segment into intermediate buffer
+    //
     int maxBytesToRead = sizeof(Header) + MSS;
     if (conn->recvStream.freeSpace() < maxBytesToRead) {
         Log(ERROR, "insufficient free space in recvBuffer for header + segment - waiting until space free'd");
@@ -151,30 +158,107 @@ void Engine::handleSegmentArrive(Connection *conn) {
     }
     Log(INFO, std::format("segment read - {} bytes total (header + payload)", bytesRead));
 
-    /**
-     * Process tcp header
-     */
-    struct Header header = (struct Header)*buffer;
+    //
+    // Process TCP header
+    //
+    struct Header hdr = (struct Header)*buffer;
 
     switch (conn->state) {
         case State::LISTEN: {
-            break;
-        }
-        case State::SYN_SENT: {
-            break;
-        }
-        case State::SYN_RECEIVED: {
-            break;
-        }
-        case State::ESTABLISHED: {
-            break;
-        }
-    }
+            if (hdr.FIN || hdr.RST) {
+                Log(ERROR, std::format("state=LISTEN - FIN/RST set - invalid - sending RST to teardown connection - {}", hdr.toString()));
+                return;
+            }
 
+            if (hdr.SYN && !hdr.ACK) {
+                //
+                // SYN received
+                //
+                Log(INFO, "state=LISTEN - SYN received");
+
+                // initialise recvStream (IRS == hdr.seqNum)
+                conn->recvStream.init(hdr.seqNum);
+
+                // initialise sendStream
+                conn->sendStream.init();
+
+                // send syn-ACK
+                Header hdr;
+                hdr.srcPort = conn->srcPort;
+                hdr.destPort = conn->destPort;
+                hdr.SYN = 1;
+                hdr.seqNum = conn->sendStream.SND_ISS;
+                hdr.ACK = 1;
+                hdr.ackNum = conn->recvStream.RCV_NXT;
+                hdr.window = conn->recvStream.RCV_WND;
+
+                conn->state = State::SYN_RECEIVED;
+            } else {
+                // all other combos are invalid
+                Log(ERROR, std::format("state=LISTEN, didn't receive SYN - invalid - {}", hdr.toString()));
+                return;
+            }
+        } break;
+        case State::SYN_SENT: {
+            if (hdr.FIN || hdr.RST) {
+                Log(ERROR, std::format("state=SYN_SENT - FIN/RST set - invalid - sending RST to teardown connection - {}", hdr.toString()));
+                return;
+            }
+
+            if (hdr.SYN && hdr.ACK) {
+                //
+                // SYN-ACK received
+                //
+                Log(INFO, "state=SYN_SENT - SYN-ACK received");
+
+                // initialise recvStream (IRS=hdr.seqNum)
+                conn->recvStream.init(hdr.seqNum);
+
+                // verify the ACK of our ISS
+                // TODO - need to further verify that ackNum == SND.ISS+1 ?
+                conn->sendStream.onAck(hdr.ackNum);
+
+                // ACK peer's SYN
+                // TODO - ACK peer's SYN
+
+                conn->state = State::ESTABLISHED;
+            } else {
+                // all other combos are invalid
+                Log(ERROR, std::format("state=SYN-SENT, didn't receive SYN-ACK - invalid - {}", hdr.toString()));
+                return;
+            }
+        } break;
+        case State::SYN_RECEIVED: {
+            if (hdr.FIN || hdr.RST) {
+                Log(ERROR, std::format("state=SYN_SENT - FIN/RST set - invalid - sending RST to teardown connection - {}", hdr.toString()));
+                return;
+            }
+
+            if (hdr.ACK && !hdr.SYN) {
+                //
+                // ACK received
+                //
+                Log(INFO, "state=SYN_RECEIVED - ACK received");
+
+                // verify the ACK of our SND_ISS
+                // TODO - need to further verify that ackNum == SND.ISS+1 ?
+                conn->sendStream.onAck(hdr.ackNum);
+
+                conn->state = State::ESTABLISHED;
+            } else {
+                // all other combos are invalid
+                Log(ERROR, std::format("state=SYN-RECEIVED, didn't receive SYN-ACK - invalid - {}", hdr.toString()));
+                return;
+            }
+        } break;
+        case State::ESTABLISHED: {
+
+        } break;
+    }
 }
 
 //////////////////////////////////////////////////////////////////
-// Engine private methods
+// Rest of Engine methods
 //////////////////////////////////////////////////////////////////
 
 int Engine::createUdpSocket(const std::string& srcIp,

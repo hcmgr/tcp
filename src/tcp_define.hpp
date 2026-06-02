@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <string>
 
 #define MSS 1460
 
@@ -14,10 +15,11 @@ enum class State {
     TIME_WAIT,          // received second fin from peer, wait 2 MSL to close
     LAST_ACK,           // sent second fin, waiting on ACK
 };
+std::string toString(State state);
 
 struct __attribute__((packed)) Header
 {
-    uint16_t srcPort;
+    uint16_t srcPort;       
     uint16_t destPort;
     uint32_t seqNum;
     uint32_t ackNum;
@@ -25,13 +27,13 @@ struct __attribute__((packed)) Header
     uint16_t reserved:4;
 	uint16_t doff:4;
 
-	uint16_t FIN:1;
-	uint16_t SYN:1;
-	uint16_t RST:1;
-	uint16_t PSH:1;
-	uint16_t ACK:1;
-	uint16_t URG:1;
-	uint16_t RES2:2;
+	uint16_t SYN:1;     // seqNum == ISS
+	uint16_t ACK:1;     // ackNum active
+	uint16_t FIN:1;     // finish send of your stream
+	uint16_t RST:1;     // teardown connection immediately
+	uint16_t PSH:1;     // [un-used]
+	uint16_t URG:1;     // [un-used]
+	uint16_t RES2:2;    // [reserved]
 
     uint16_t window;
     uint16_t checksum;
@@ -39,4 +41,6 @@ struct __attribute__((packed)) Header
 
     void networkToHostOrder();
     void hostToNetworkOrder();
+
+    std::string toString();
 };

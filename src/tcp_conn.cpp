@@ -6,6 +6,17 @@
 TcpConn::TcpConn(int64_t cId)
     : connectionId(cId) {}
 
+std::string toString(ConnType connType) {
+    switch (connType) {
+        case ConnType::LISTEN:
+            return "LISTEN";
+        case ConnType::CONNECT:
+            return "CONNECT";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 TcpConn* TcpConn::open(const std::string &srcIp, 
                        int srcPort, 
                        const std::string &destIp,
