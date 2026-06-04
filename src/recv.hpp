@@ -50,9 +50,8 @@ private:
     int64_t capacity;
 
     // logical seqnum state
-    int64_t irs;
-    int64_t nxt;
-    int64_t wnd; // limits how much data we can receive (header's WINDOW field), == freeSpaceBytes()
+    int64_t irs; // initial receive seqnum
+    int64_t nxt; // next seqnum to receive
 
     // physical buffer state
     int64_t readPos;
@@ -73,7 +72,11 @@ public:
     }
 
 public:
-    void init(int64_t IRS) {
+    int64_t getNxt() { return nxt; }
+    int64_t getWnd() { return freeSpaceBytes(); }
+
+public:
+    void init(int64_t _irs) {
         capacity = RECV_BUFFER_CAPACITY;
         buffer = (uint8_t*)malloc(capacity);
         if (buffer == nullptr) {
@@ -81,9 +84,8 @@ public:
             return;
         }
 
-        irs = IRS;
-        nxt = irs;
-        wnd = freeSpaceBytes();
+        irs = _irs;
+        nxt = irs + 1; // have consumed irs byte => next byte we expect is irs + 1
 
         readPos = 0;
         nxtPos = 0;

@@ -16,11 +16,6 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
-struct PendingAck {
-    // ackNum
-    // event id / handle of ACK-timeout event
-};
-
 struct Connection {
     // conection id, assigned by Engine, guaranteed unique within this process
     int64_t id;
@@ -37,11 +32,15 @@ struct Connection {
     // tcp-state-machine state of the connection
     State state;
 
-    // send stream
+    // send state
     SendStream sendStream;
+    uint8_t *sendSegmentBuffer;
+    int64_t sendSegmentBufferSize;
 
-    // recv stream
+    // recv state
     RecvStream recvStream;
+    uint8_t *recvSegmentBuffer;
+    int64_t recvSegmentBufferSize;
 
     // pending-read state (users sleeping read() calls waiting on available data)
 
@@ -49,7 +48,17 @@ struct Connection {
 
     // TODO - re-transmission data structure
 
-    Connection();
+    Connection(
+        int64_t id,
+        std::string srcIp,
+        int srcPort,
+        std::string destIp,
+        int destPort,
+        int udpSocketFd,
+        ConnType connType
+    );
+
+    ~Connection();
 };
 
 class Engine {
@@ -82,7 +91,16 @@ public:
     void close(int64_t cId);
 
 public:
-    void handleSegmentArrive(Connection *conn);
+    void recvSegment(Connection *conn);
+
+    int64_t sendSegment(Connection *conn, int64_t n, uint8_t *payloadBuffer);
+    int64_t sendSegmentHeaderOnly(Connection *conn, Header &hdr);
+
+    bool sendHandshakeSyn(Connection *conn);
+    bool sendHandshakeSynAck(Connection *conn);
+    bool sendHandshakeAck(Connection *conn);
+
+    bool sendRst(Connection *conn);
 
 private:
     int createUdpSocket(const std::string& srcIp,
@@ -90,13 +108,12 @@ private:
                         const std::string& dstIp,
                         int dstPort);
     
-    int handleHandshakeSyn(const Header &hdr);
-    int handleHandshakeSynAck(const Header &hdr);
-    int handleHandshakeAck(const Header &hdr);
-    
+    bool verifyReceivedHeader(Connection *conn, const Header &hdr);
+
+    void reset(Connection *conn);
 };
 
 //////////////////////////////////////////////////////////////////
 // Libevent callbacks
 //////////////////////////////////////////////////////////////////
-void libeventSegmentArrive(evutil_socket_t fd, short events, void* arg);
+void libeventRecvSegment(evutil_socket_t fd, short events, void* arg);

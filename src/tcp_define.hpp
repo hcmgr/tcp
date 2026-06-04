@@ -14,6 +14,7 @@ enum class State {
     FIN_WAIT_2,         // sent first FIN, ACK'd by other
     TIME_WAIT,          // received second fin from peer, wait 2 MSL to close
     LAST_ACK,           // sent second fin, waiting on ACK
+    BAD                 // errant state - teardown immediately
 };
 std::string toString(State state);
 
@@ -25,7 +26,7 @@ struct __attribute__((packed)) Header
     uint32_t ackNum;
 
     uint16_t reserved:4;
-	uint16_t doff:4;
+	uint16_t doff:4;    // [un-used]
 
 	uint16_t SYN:1;     // seqNum == ISS
 	uint16_t ACK:1;     // ackNum active
@@ -33,14 +34,17 @@ struct __attribute__((packed)) Header
 	uint16_t RST:1;     // teardown connection immediately
 	uint16_t PSH:1;     // [un-used]
 	uint16_t URG:1;     // [un-used]
-	uint16_t RES2:2;    // [reserved]
+	uint16_t RES2:4;    // [reserved]
 
     uint16_t window;
     uint16_t checksum;
-    uint16_t urgPtr;
+    uint16_t urgPtr;    // [un-used]
+
+    void setChecksum();
+    bool verifyChecksum() const;
 
     void networkToHostOrder();
     void hostToNetworkOrder();
 
-    std::string toString();
+    std::string toString() const;
 };

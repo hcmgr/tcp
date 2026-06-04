@@ -7,7 +7,7 @@
 
 #define SEND_BUFFER_CAPACITY 65536
 #define MAX_ISS 1000000
-#define INIT_WND 4096
+#define DEFAULT_INIT_RWND 4096
 
 struct InFlightSegment {
     int64_t seqNum;
@@ -58,23 +58,29 @@ private:
     int64_t capacity;
 
     // logical seqnum state
-    int64_t iss;
-    int64_t una;
-    int64_t nxt;
-    int64_t wnd; // limits how much inFlight/un-ack'd data can be, == min(cwnd, rwnd)
+    int64_t iss; // initial send seqnum
+    int64_t una; // first sent and un-ack'd seqnum
+    int64_t nxt; // next seqnum to send
 
     // physical buffer state
     int64_t unaPos;
     int64_t nxtPos;
     int64_t writePos;
 
+    // wnd == min(cwnd, rwnd) == max un-ack'd bytes that can be in-flight
+    int64_t cwnd;
+    int64_t rwnd;
+
     std::deque<InFlightSegment> inFlightSegments;
 
     SendStreamState state;
 
+    // ref back to owning Connection
+    Connection *connRef;
+
 public:
-    SendStream()
-        : state(SendStreamState::CLOSED) {}
+    SendStream(Connection *conn)
+        : connRef(conn), state(SendStreamState::CLOSED) {}
 
     ~SendStream() {
         free(buffer);
@@ -83,7 +89,15 @@ public:
     }
 
 public:
-    void init() {
+    int64_t getIss() { return iss; }
+    int64_t getNxt() { return nxt; }
+    int64_t getWnd() { return std::min(cwnd, rwnd); }
+
+public:
+    void setRwnd(int64_t _rwnd) { rwnd = _rwnd; }
+
+public:
+    void init(int64_t initRwnd) {
         capacity = SEND_BUFFER_CAPACITY;
         buffer = (uint8_t*)malloc(capacity);
         if (buffer == nullptr) {
@@ -91,16 +105,27 @@ public:
             return;
         }
 
+        if (connRef == nullptr) {
+            Log(ERROR, std::format("connRef == nullptr"));
+            return;
+        }
+
         iss = generateIss();
         una = iss;
-        nxt = iss;
-        wnd = INIT_WND;
+        nxt = iss; // first byte to send should be the iss itself (i.e. on initial SYN/SYN-ACK)
+
+        cwnd = INT64_MAX;
+        rwnd = initRwnd;
 
         unaPos = 0;
         nxtPos = 0;
         writePos = 0;
 
         state = SendStreamState::INITIALISED;
+    }
+
+    void init() {
+        init(DEFAULT_INIT_RWND);
     }
 
     void write(int64_t n, uint8_t *inBuffer) {
@@ -124,15 +149,33 @@ public:
         return;
     }
 
-    void onAck(int64_t ackNum) {
+    bool onHandshakeSynSend() {
+        if (nxt != iss) {
+            Log(ERROR, std::format("on handshake SYN send, nxt ({}) should be == iss ({})", nxt, iss));
+            return false;
+        }
+        nxt += 1; // sending ISS byte => advance nxt one byte
+        return true;
+    }
+
+    bool onHandshakeAckRecv(int64_t ackNum) {
+        if (!(ackNum == nxt && nxt == iss + 1 && una == iss)) {
+            Log(ERROR, std::format("on handshake ACK, should be: ackNum ({}) == nxt ({}) == iss ({}) + 1", ackNum, nxt, iss));
+            return;
+        }
+        una += 1;
+        return true;
+    }
+
+    bool onAck(int64_t ackNum) {
         // ackNum is meaningful if its in the range: [una, nxt], i.e. if its ack'ing unack'd bytes
         if (ackNum < una) {
             Log(ERROR, std::format("received ackNum ({}) < una ({}) - invalid", ackNum, una));
-            return;
+            return false;
         }
         if (ackNum > nxt) {
             Log(ERROR, std::format("received ackNum ({}) > nxt ({}) - invalid", ackNum, nxt));
-            return;
+            return false;
         }
 
         //
@@ -148,7 +191,7 @@ public:
                 // segment fully ack'd - remove segment
                 //
                 una += seg.size;
-                unaPos = (una - iss) % capacity;
+                unaPos = (unaPos + seg.size) % capacity;
 
                 inFlightSegments.pop_front();
             } 
@@ -158,7 +201,7 @@ public:
                 //
                 int64_t ackedBytes = ackNum - seg.seqNum;
                 una += ackedBytes;
-                unaPos = (una - iss) % capacity;
+                unaPos = (unaPos + ackedBytes) % capacity;
 
                 seg.seqNum += ackedBytes;
                 seg.size -= ackedBytes;
@@ -169,10 +212,10 @@ public:
 
         if (una != ackNum) {
             Log(ERROR, std::format("after ACK, una ({}) and ackNum ({}) should be equal", una, ackNum));
-            return;
+            return false;
         }
         if (!bufferStateValid()) {
-            return;
+            return false;
         }
     }
 
@@ -182,22 +225,34 @@ private:
     /**
      * Attempt to send segment - i.e. package up available data into 1 MSS, and send.
      * 
-     * Triggered by:
+     * Triggered on new data being available to send, i.e. on:
      *      - user write(), OR;
      *      - ACK of sent data
-     * i.e. on new data available to send.
      */
     void attemptSegmentSend() {
-        if (readyToSendBytes() >= MSS) {
-            //
-            // >= 1 MSS available - send as many full segments as possible
-            //
-        } 
-        else {
-            //
-            // < 1 MSS available - queue a pending-send, to expire after X ms
-            //
+        //
+        // Send as many 1 MSS segments as we have available
+        //
+        while (readyToSendBytes() >= MSS) {
+            int64_t bytesSent = Engine::getInstance().sendSegment(connRef, MSS, buffer + nxtPos);
+            if (bytesSent == -1) {
+                return;
+            }
+            nxt += bytesSent;
+            nxtPos = (nxtPos + bytesSent) % capacity;
         }
+
+        if (!bufferStateValid()) {
+            return;
+        }
+
+        //
+        // At this point, < 1 MSS available to send.
+        // Currently, just wait until more data is available.
+        //
+        // In future, queue a pending-send to expire after X ms. If still not sent by then, send
+        // pending bytes anyway.
+        //
     }
 
     int64_t readyToSendBytes() {
