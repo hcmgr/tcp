@@ -38,24 +38,28 @@ struct Connection {
     // tcp-state-machine state of the connection
     State state;
 
-    // send state
+    // send stream
     SendStream sendStream;
     uint8_t *sendSegmentBuffer;
     int64_t sendSegmentBufferSize;
 
-    // recv state
+    // recv stream
     RecvStream recvStream;
     uint8_t *recvSegmentBuffer;
     int64_t recvSegmentBufferSize;
 
-    // pending-read state (users sleeping read() calls waiting on available data)
+    // pending-open state (users sleeping open() calls - waiting to reach ESTABLISHED state)
 
-    // pending-ACK state (delayed ACK => piggyback ACKs onto other segments / ACKs)
+    // pending-read state (users sleeping read() calls - waiting on available data)
+
+    // pending-close state (users sleeping on close() calls - waiting to reach CLOSED state)
+
+    // pending-ACK state (delayed ACK - piggyback ACKs onto other segments / ACKs)
+
+    // pending-send state (waiting until 1 MSS available to send)
 
     // rto state
     Rto rto;
-
-    // TODO - re-transmission data structure
 
     Connection(
         int64_t id,

@@ -13,10 +13,6 @@
 struct SendSegment {
     int64_t seqNum;
     int64_t size;
-
-    bool equals(const SendSegment &other) {
-        return seqNum == other.seqNum && size == other.size;
-    }
 };
 
 enum class SendStreamState {
@@ -150,6 +146,7 @@ public:
 
         // new data available => trigger segment-send-attempt
         attemptSegmentSend();
+
         return;
     }
 
@@ -184,22 +181,22 @@ public:
         return true;
     }
 
-    bool onHandshakeAckRecv(int64_t ackNum) {
-        if (!(ackNum == nxt && nxt == iss + 1 && una == iss)) {
-            Log(ERROR, std::format("on handshake ACK, should be: ackNum ({}) == nxt ({}) == iss ({}) + 1", ackNum, nxt, iss));
-            return;
-        }
-        una += 1; // peer ack'd ISS => advance una one byte
-        return true;
-    }
+    // bool onHandshakeAckRecv(int64_t ackNum) {
+    //     if (!(ackNum == nxt && nxt == iss + 1 && una == iss)) {
+    //         Log(ERROR, std::format("on handshake ACK, should be: ackNum ({}) == nxt ({}) == iss ({}) + 1", ackNum, nxt, iss));
+    //         return;
+    //     }
+    //     una += 1; // peer ack'd ISS => advance una one byte
+    //     return true;
+    // }
 
     bool onAck(int64_t ackNum) {
-        // ackNum is meaningful if its in the range: [una, nxt], i.e. if its ack'ing unack'd bytes
+        // ackNum is meaningful if its in the range: [una, nxt), i.e. if its ack'ing unack'd bytes
         if (ackNum < una) {
             Log(ERROR, std::format("received ackNum ({}) < una ({}) - invalid", ackNum, una));
             return false;
         }
-        if (ackNum > nxt) {
+        if (ackNum >= nxt) {
             Log(ERROR, std::format("received ackNum ({}) > nxt ({}) - invalid", ackNum, nxt));
             return false;
         }
@@ -233,6 +230,9 @@ public:
                 seg.size -= ackedBytes;
 
                 break;
+            } else {
+                Log(ERROR, std::format("segment neither fully ack'd nor partially ack'd"));
+                return false;
             }
         }
 
@@ -243,6 +243,9 @@ public:
         if (!bufferStateValid()) {
             return false;
         }
+
+        // ack means more data available => attempt segment sends
+        attemptSegmentSend();
 
         //
         // Update rto state after ack. 
@@ -269,7 +272,7 @@ public:
             return false;
         }
         if (!bufferStateValid()) {
-            return;
+            return false;
         }
 
         // re-send segment
@@ -281,7 +284,7 @@ public:
 
         // segment stays in in-flight queue, una unchanged
 
-        return;
+        return true;
      }
 
 private:
@@ -299,6 +302,7 @@ private:
             SendSegment seg;
             seg.seqNum = nxt;
             seg.size = bytesSent;
+            inFlightSegments.push_back(seg);
 
             // advance nxt
             nxt += bytesSent;

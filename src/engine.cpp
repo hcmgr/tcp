@@ -244,7 +244,7 @@ void Engine::onRecvSegment(Connection *conn) {
                 conn->recvStream.init(hdr.seqNum);
 
                 // verify peer's ACK of our ISS
-                bool res = conn->sendStream.onHandshakeAckRecv(hdr.ackNum);
+                bool res = conn->sendStream.onAck(hdr.ackNum);
                 if (!res) {
                     reset(conn);
                     return;
@@ -272,7 +272,7 @@ void Engine::onRecvSegment(Connection *conn) {
                 Log(INFO, "state=SYN_RECEIVED - ACK received");
 
                 // verify peer's ACK of our ISS
-                bool res = conn->sendStream.onHandshakeAckRecv(hdr.ackNum);
+                bool res = conn->sendStream.onAck(hdr.ackNum);
                 if (!res) {
                     reset(conn);
                     return;
@@ -299,7 +299,12 @@ void Engine::onRecvSegment(Connection *conn) {
             // handle ACK
             //
             if (hdr.ACK) {
-                conn->sendStream.onAck(hdr.ackNum);
+                bool res = conn->sendStream.onAck(hdr.ackNum);
+                if (!res) {
+                    Log(ERROR, std::format("state=ESTABLISHED, invalid ACK - {}", hdr.toString()));
+                    reset(conn);
+                    return;
+                }
             }
 
             //
@@ -325,7 +330,6 @@ void Engine::onRecvSegment(Connection *conn) {
             // receive and ack peer's fin, move to TIME_WAIT
         } break;
         case State::TIME_WAIT: {
-            // once enter 
         } break;
         case State::LAST_ACK: {
             // receive ack of fin, move to CLOSED
@@ -335,6 +339,9 @@ void Engine::onRecvSegment(Connection *conn) {
 
 void Engine::onRto(Connection *conn) {
     if (!verifyConn(conn)) return;
+
+    // TODO - verify we're in valid state to respond to an RTO
+    // TODO - add to Rto object isSyn / isFin fields - then, change onRto behaviour depending on it
 
     if (!conn->rto.active) {
         Log(ERROR, "no pending RTO");
