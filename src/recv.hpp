@@ -1,12 +1,12 @@
 #include <cstdint>
 
+#include "utils.hpp"
+
 #define RECV_BUFFER_CAPACITY 65536
 
-struct ReceivedSegment {
+struct RecvSegment {
     int64_t seqNum;
     int64_t size;
-
-    int64_t bufferPos;
 };
 
 enum class RecvStreamState {
@@ -54,12 +54,14 @@ private:
     // logical seqnum state
     int64_t irs; // initial receive seqnum
     int64_t nxt; // next seqnum to receive
+    int64_t read; // next seqnum to read
 
     // physical buffer state
-    int64_t readPos;
     int64_t nxtPos;
+    int64_t readPos;
 
-    std::deque<ReceivedSegment> receivedSegments;
+    std::deque<RecvSegment> receivedSegments;
+    int64_t cumSegmentSize; // cumulative size of `receivedSegments` queue
 
     RecvStreamState state;
 
@@ -91,6 +93,7 @@ public:
 
         irs = _irs;
         nxt = irs + 1; // have consumed irs byte => next byte we expect is irs + 1
+        read = irs + 1;
 
         readPos = 0;
         nxtPos = 0;
@@ -98,7 +101,7 @@ public:
         state = RecvStreamState::INITIALISED;
     }
 
-    void read(int64_t n, uint8_t *outBuffer) {
+    void readN(int64_t n, uint8_t *outBuffer) {
         int64_t bytesAvail = readyToReadBytes();
         if (n < bytesAvail) {
             //
@@ -111,49 +114,116 @@ public:
         }
 
         std::memcpy(outBuffer, buffer + readPos, n);
+        read += n;
         readPos += n;
         return;
     }
 
     void receiveSegment(int64_t seqNum, int64_t n, uint8_t *payload) {
-        int64_t freeSpace = freeSpaceBytes();
-        if (freeSpace < n) {
-            Log(ERROR, std::format("{} bytes exceeds free space - {}", n, freeSpace));
+        //
+        // received segments only valid in seqnum range: [nxt, read)
+        //
+        int64_t segL = seqNum;
+        int64_t segR = seqNum + n - 1; // inclusive
+        if (segL < nxt || read <= segR){
+            Log(ERROR, std::format("out of range"));
             return;
         }
 
-        if (seqNum < nxt) {
-            Log(INFO, std::format("seqNum ({}) < nxt ({}) - already received - ignore"));
-            return;
-        }
-
-        //
-        // Segments can/will be received out of order.
-        // So, find its correct location in our 'receiveSegments' deque.
-        // Must detect overlaps.
-        //
-        ReceivedSegment seg;
+        RecvSegment seg;
         seg.seqNum = seqNum;
         seg.size = n;
-        seg.bufferPos = (nxtPos + (nxt - seqNum)) % capacity;
+
+        //
+        // place segment at correct location in our 'receivedSegments' deque (can be out-of-order)
+        //
+        bool placed = false;
+        auto it = receivedSegments.begin();
+        while (!receivedSegments.empty()) {
+            RecvSegment &curr = *it;
+            int64_t currL = curr.seqNum;
+            int64_t currR = curr.seqNum + curr.size - 1; // inclusive
+            if (segR <= currL) {
+                // seg somewhere before curr - place it
+                receivedSegments.insert(it, seg);
+                cumSegmentSize += seg.size;
+                placed = true;
+                break;
+            } else if (currR < segL) {
+                // seg somewhere after curr - wait to place
+                continue;
+            } else {
+                // invalid
+                Log(ERROR, std::format("invalid range of new segment: seqNum={}, size={}", seg.seqNum, seg.size));
+                return;
+            }
+        }
+        if (!placed) {
+            // not placed yet - place at end
+            receivedSegments.push_back(seg);
+            cumSegmentSize += seg.size;
+        }
+
+        //
+        // advance nxt as far as segments are contiguous
+        //
+        while (!receivedSegments.empty()) {
+            RecvSegment &curr = receivedSegments.front();
+            if (nxt == curr.seqNum) {
+                nxt += curr.size;
+                nxtPos = (nxtPos + curr.size) % capacity;
+                cumSegmentSize -= curr.size;
+                receivedSegments.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if (!bufferStateValid()) {
+            return;
+        }
     }
 
 private:
-    /**
-     * For now:
-     *      - send acks immediately on receipt of new data
-     * Later - implement delayed acks
-     *      - queue ack for X ms, waiting to piggyback it onto a sending segment (or another ack)
-     */
+    //
+    // For now:
+    //      - send acks immediately on receipt of new data
+    // Later, implement delayed acks
+    //      - queue ack for X ms, waiting to piggyback it onto a sending segment (or another ack)
+    //
     void attemptAck() {
         Engine::getInstance().sendAck(connRef);
     }
 
+    //
+    // 'Ready-to-read' space is in front of readPos before nxtPos.
+    //
     int64_t readyToReadBytes() {
         return ((nxtPos + capacity) - readPos) % capacity;
     }
 
+    //
+    // Free space is in front of nxtPos before readPos.
+    // Segments are placed out-of-order in front of nxtPos, but nxtPos only moves once
+    // section in front of it is contiguous. So, reduce free space by `cumSegmentSize`.
+    //
     int64_t freeSpaceBytes() {
-        return ((readPos + capacity) - nxtPos) % capacity;
+        return (((readPos + capacity) - nxtPos) % capacity) - cumSegmentSize;
+    }
+
+    bool bufferStateValid() {
+        if (nxtPos != ((nxt - irs) % capacity)) {
+            Log(ERROR, std::format("nxtPos ({}) is incorrect buffer position of nxt ({})", nxtPos, nxt));
+            return false;
+        }
+        if (readPos != ((read - irs) % capacity)) {
+            Log(ERROR, std::format("readPos ({}) is incorrect buffer position of read ({})", readPos, read));
+            return false;
+        }
+        if (!receivedSegments.empty() && receivedSegments.front().seqNum == nxt) {
+            Log(ERROR, std::format("front segment's seqNum should not be == nxt, nxt should have advanced to first non-contiguous segment"));
+            return false;
+        }
+        return true;
     }
 };

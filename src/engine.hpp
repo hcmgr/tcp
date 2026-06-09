@@ -115,6 +115,7 @@ public:
 
     void queueRto(Connection *conn, SendSegment &seg);
     void cancelRto(Connection *conn);
+
 private:
     int createUdpSocket(const std::string& srcIp,
                         int srcPort,

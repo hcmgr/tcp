@@ -158,7 +158,29 @@ public:
             Log(ERROR, std::format("on handshake SYN send, nxt ({}) should be == iss ({})", nxt, iss));
             return false;
         }
-        nxt += 1; // sending ISS byte => advance nxt one byte
+
+        // queue in-flight segment (so we can re-tx if necessary)
+        SendSegment seg;
+        seg.seqNum = nxt;
+        seg.size = 1;
+        inFlightSegments.push_back(seg);
+
+        // sending SYN consumes one seqnum
+        nxt += 1;
+
+        return true;
+    }
+
+    bool onHandshakeFinSend() {
+        // queue in-flight segment (so we can re-tx if necessary)
+        SendSegment seg;
+        seg.seqNum = nxt;
+        seg.size = 1;
+        inFlightSegments.push_back(seg);
+
+        // sending FIN consumes one seqnum
+        nxt += 1;
+
         return true;
     }
 
@@ -223,7 +245,8 @@ public:
         }
 
         //
-        // Update rto state after ack. Requeue earliest in-flight segment, if one exists.
+        // Update rto state after ack. 
+        // Cancel whatever rto is queued, and queue earliest in-flight segment, if one exists.
         //
         Engine::getInstance().cancelRto(connRef);
         if (!inFlightSegments.empty()) {
@@ -271,6 +294,13 @@ private:
             if (bytesSent == -1) {
                 return;
             }
+
+            // queue in-flight segment
+            SendSegment seg;
+            seg.seqNum = nxt;
+            seg.size = bytesSent;
+
+            // advance nxt
             nxt += bytesSent;
             nxtPos = (nxtPos + bytesSent) % capacity;
         }
@@ -303,15 +333,6 @@ private:
         return dist(generator);
     }
 
-    /**
-     * Checks the following invariants:
-     *      unaPos == (una - iss) % capacity
-     *          - i.e. that unaPos is the correct buffer position of una
-     *      nxtPos == (nxt - iss) % capacity
-     *          - i.e. that nxtPos is the correct buffer position of nxt
-     *      inFlightSegments.front().seqNum == una
-     *          - i.e. that the first in-flight seqNum is indeed == to una
-     */
     bool bufferStateValid() {
         if ((unaPos != ((una - iss) % capacity))) {
             Log(ERROR, std::format("unaPos ({}) is incorrect buffer position of una ({})", unaPos, una));

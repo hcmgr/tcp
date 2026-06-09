@@ -299,7 +299,7 @@ void Engine::onRecvSegment(Connection *conn) {
             // handle ACK
             //
             if (hdr.ACK) {
-
+                conn->sendStream.onAck(hdr.ackNum);
             }
 
             //
@@ -403,6 +403,20 @@ int64_t Engine::sendSegmentHeaderOnly(Connection *conn, Header &hdr) {
         Log(ERROR, std::format("partial send() - attempted {}, sent {}", bytesToSend, bytesSent));
         return -1;
     }
+
+    //
+    // Queue RTO if:
+    //      a) no active RTO, AND;
+    //      b) segment consumes seqnums, i.e. SYN, FIN, or non-zero payload
+    //
+    if (!conn->rto.active && (hdr.SYN || hdr.FIN)) {
+        SendSegment seg;
+        seg.seqNum = hdr.seqNum;
+        seg.size = 0;
+
+        queueRto(conn, seg);
+    }
+
     return bytesSent;
 }
 
@@ -457,9 +471,7 @@ bool Engine::sendHandshakeAck(Connection *conn) {
 }
 
 bool Engine::sendAck(Connection *conn) {
-    if (!verifyConn(conn)) {
-        return false;
-    }
+    if (!verifyConn(conn)) return false;
 
     Header hdr = makeBaseHeader(conn);
     hdr.ACK = 1;
@@ -499,11 +511,21 @@ bool Engine::sendFin(Connection *conn) {
         return false;
     }
 
+    bool res = conn->sendStream.onHandshakeFinSend();
+    if (!res) {
+        return false;
+    }
+
     return true;
 }
 
 void Engine::queueRto(Connection *conn, SendSegment &seg) {
     if (!verifyConn(conn)) return;
+
+    if (conn->rto.active) {
+        Log(ERROR, "cannot queue new rto whilst current rto is active - must cancel current one first");
+        return;
+    }
 
     struct timeval t;
     t.tv_usec = RTO_TIMEOUT_MS * 1000;
@@ -519,7 +541,7 @@ void Engine::cancelRto(Connection *conn) {
     if (!verifyConn(conn)) return;
 
     if (!conn->rto.active) {
-        Log(INFO, "bad rto cancel - no active rto to cancel");
+        Log(INFO, "no active rto to cancel");
         return;
     }
 
