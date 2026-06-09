@@ -2,6 +2,7 @@
 #include <deque>
 #include <format>
 #include <cassert>
+#include <algorithm>
 
 #include "utils.hpp"
 
@@ -9,11 +10,13 @@
 #define MAX_ISS 1000000
 #define DEFAULT_INIT_RWND 4096
 
-struct InFlightSegment {
+struct SendSegment {
     int64_t seqNum;
     int64_t size;
 
-    int64_t bufferPos;
+    bool equals(const SendSegment &other) {
+        return seqNum == other.seqNum && size == other.size;
+    }
 };
 
 enum class SendStreamState {
@@ -71,7 +74,7 @@ private:
     int64_t cwnd;
     int64_t rwnd;
 
-    std::deque<InFlightSegment> inFlightSegments;
+    std::deque<SendSegment> inFlightSegments;
 
     SendStreamState state;
 
@@ -92,6 +95,7 @@ public:
     int64_t getIss() { return iss; }
     int64_t getNxt() { return nxt; }
     int64_t getWnd() { return std::min(cwnd, rwnd); }
+    SendStreamState getState() { return state; }
 
 public:
     void setRwnd(int64_t _rwnd) { rwnd = _rwnd; }
@@ -163,7 +167,7 @@ public:
             Log(ERROR, std::format("on handshake ACK, should be: ackNum ({}) == nxt ({}) == iss ({}) + 1", ackNum, nxt, iss));
             return;
         }
-        una += 1;
+        una += 1; // peer ack'd ISS => advance una one byte
         return true;
     }
 
@@ -184,7 +188,7 @@ public:
 
         // advance una, removing inFlightSegments as necessary
         while (!inFlightSegments.empty()) {
-            InFlightSegment &seg = inFlightSegments.front();
+            SendSegment &seg = inFlightSegments.front();
 
             if (seg.seqNum + seg.size <= ackNum) {
                 //
@@ -195,7 +199,7 @@ public:
 
                 inFlightSegments.pop_front();
             } 
-            else if (seg.seqNum < ackNum < seg.seqNum + seg.size) {
+            else if (seg.seqNum < ackNum && ackNum < seg.seqNum + seg.size) {
                 //
                 // segment partially ack'd - update segment
                 //
@@ -217,18 +221,47 @@ public:
         if (!bufferStateValid()) {
             return false;
         }
+
+        //
+        // Update rto state after ack. Requeue earliest in-flight segment, if one exists.
+        //
+        Engine::getInstance().cancelRto(connRef);
+        if (!inFlightSegments.empty()) {
+            Engine::getInstance().queueRto(connRef, inFlightSegments.front());
+        }
     }
 
-     void onRto();
+     bool onRto(SendSegment seg) {
+        //
+        // Rto must be for earliest in-flight segment, i.e. front of queue.
+        // If not, something is wrong.
+        //
+        if (inFlightSegments.empty()) {
+            Log(ERROR, "RTO generated with no in-flight segments");
+            return false;
+        }
+        SendSegment &earliestSeg = inFlightSegments.front();
+        if (!(earliestSeg.seqNum == seg.seqNum && earliestSeg.size == seg.size)) {
+            Log(ERROR, "RTO generated for non-front-of-queue segment");
+            return false;
+        }
+        if (!bufferStateValid()) {
+            return;
+        }
+
+        // re-send segment
+        int64_t bufferPos = unaPos;
+        int64_t bytesSent = Engine::getInstance().sendSegment(connRef, seg.size, buffer + bufferPos);
+        if (bytesSent == -1) {
+            return false;
+        }
+
+        // segment stays in in-flight queue, una unchanged
+
+        return;
+     }
 
 private:
-    /**
-     * Attempt to send segment - i.e. package up available data into 1 MSS, and send.
-     * 
-     * Triggered on new data being available to send, i.e. on:
-     *      - user write(), OR;
-     *      - ACK of sent data
-     */
     void attemptSegmentSend() {
         //
         // Send as many 1 MSS segments as we have available

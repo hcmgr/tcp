@@ -16,6 +16,12 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
+struct Rto {
+    SendSegment seg;
+    bool active;
+    struct event *event;
+};
+
 struct Connection {
     // conection id, assigned by Engine, guaranteed unique within this process
     int64_t id;
@@ -45,6 +51,9 @@ struct Connection {
     // pending-read state (users sleeping read() calls waiting on available data)
 
     // pending-ACK state (delayed ACK => piggyback ACKs onto other segments / ACKs)
+
+    // rto state
+    Rto rto;
 
     // TODO - re-transmission data structure
 
@@ -91,7 +100,8 @@ public:
     void close(int64_t cId);
 
 public:
-    void recvSegment(Connection *conn);
+    void onRecvSegment(Connection *conn);
+    void onRto(Connection *conn);
 
     int64_t sendSegment(Connection *conn, int64_t n, uint8_t *payloadBuffer);
     int64_t sendSegmentHeaderOnly(Connection *conn, Header &hdr);
@@ -99,21 +109,28 @@ public:
     bool sendHandshakeSyn(Connection *conn);
     bool sendHandshakeSynAck(Connection *conn);
     bool sendHandshakeAck(Connection *conn);
-
+    bool sendAck(Connection *conn);
     bool sendRst(Connection *conn);
+    bool sendFin(Connection *conn);
 
+    void queueRto(Connection *conn, SendSegment &seg);
+    void cancelRto(Connection *conn);
 private:
     int createUdpSocket(const std::string& srcIp,
                         int srcPort,
                         const std::string& dstIp,
                         int dstPort);
     
+    Header makeBaseHeader(Connection *conn);
     bool verifyReceivedHeader(Connection *conn, const Header &hdr);
-
+    bool verifyConn(Connection *conn);
     void reset(Connection *conn);
 };
 
 //////////////////////////////////////////////////////////////////
 // Libevent callbacks
 //////////////////////////////////////////////////////////////////
-void libeventRecvSegment(evutil_socket_t fd, short events, void* arg);
+void libeventOnRecvSegment(evutil_socket_t fd, short events, void* arg);
+void libeventOnRto(evutil_socket_t fd, short events, void* arg);
+
+

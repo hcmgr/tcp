@@ -32,17 +32,19 @@ enum class RecvStreamState {
  * Even though the recv stream is a CONTINUOUS byte stream, we keep track of our DISCETE
  * received segments. This is so that, if/when they arrive out of order, we can stitch 
  * the segments together properly. We achieve this with the `receivedSegments` deque.
- * Received segments are added onto the queue if they are not the 'next expected segment',
- * i.e. if seqnum != nxt. Once 1 or more segments are contiguous with nxt, the contiguous 
- * segments are taken off and nxt is advanced. Those segments now lie in range [readPos, nxtPos],
- * and are thus readable by the user.
+ * Received segments are added onto the queue when they arrive, and taken off when they are read.
+ * Importantly, nxt/nxtPos only moves if the next contiguous segment arrives.
+ * For example:
+ *      [nxt == 1000]
+ *      segment 1000-1500 arrives [nxt == 1500]
+ *      segment 2000-2500 arrives [nxt == 1500]
+ *      segment 2500-3000 arrives [nxt == 1500]
+ *      segment 1500-2000 arrives [nxt == 3000]
  * 
  * Responsibilities:
  *      - process user read()'s
  *      - receive segments
  *      - send ACKs of received segments
- *          - [for now] send immediately on receipt of a segment
- *          - [later] queue the ACK with a timer, waiting to piggy back on any outgoing segments
  */
 class RecvStream {
 private:
@@ -60,6 +62,9 @@ private:
     std::deque<ReceivedSegment> receivedSegments;
 
     RecvStreamState state;
+
+    // ref back to owning Connection
+    Connection *connRef;
 
 public:
     RecvStream()
@@ -110,11 +115,38 @@ public:
         return;
     }
 
-    void receiveSegment() {}
+    void receiveSegment(int64_t seqNum, int64_t n, uint8_t *payload) {
+        int64_t freeSpace = freeSpaceBytes();
+        if (freeSpace < n) {
+            Log(ERROR, std::format("{} bytes exceeds free space - {}", n, freeSpace));
+            return;
+        }
+
+        if (seqNum < nxt) {
+            Log(INFO, std::format("seqNum ({}) < nxt ({}) - already received - ignore"));
+            return;
+        }
+
+        //
+        // Segments can/will be received out of order.
+        // So, find its correct location in our 'receiveSegments' deque.
+        // Must detect overlaps.
+        //
+        ReceivedSegment seg;
+        seg.seqNum = seqNum;
+        seg.size = n;
+        seg.bufferPos = (nxtPos + (nxt - seqNum)) % capacity;
+    }
 
 private:
+    /**
+     * For now:
+     *      - send acks immediately on receipt of new data
+     * Later - implement delayed acks
+     *      - queue ack for X ms, waiting to piggyback it onto a sending segment (or another ack)
+     */
     void attemptAck() {
-
+        Engine::getInstance().sendAck(connRef);
     }
 
     int64_t readyToReadBytes() {

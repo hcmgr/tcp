@@ -37,7 +37,7 @@ Connection::Connection(
         state = State::CLOSED;
     } else {
         Log(ERROR, std::format("incorrect connType: {} - defaulting to closed", toString(connType)));
-        state = State::BAD;
+        state = State::INVALID;
         return;
     }
 
@@ -47,7 +47,7 @@ Connection::Connection(
     recvSegmentBuffer = (uint8_t*)malloc(recvSegmentBufferSize);
     if (sendSegmentBuffer == nullptr || recvSegmentBuffer == nullptr) {
         Log(ERROR, std::format("issue allocating send/recv segment buffer - {} {}", sendSegmentBuffer, recvSegmentBuffer));
-        state = State::BAD;
+        state = State::INVALID;
         return;
     }
 }
@@ -55,7 +55,7 @@ Connection::Connection(
 Connection::~Connection() {
     free(sendSegmentBuffer);
     free(recvSegmentBuffer);
-    state = State::BAD;
+    state = State::INVALID;
 }
 
 Engine::Engine()
@@ -106,13 +106,13 @@ int64_t Engine::open(const std::string srcIp,
 
     // setup Connection object
     Connection* conn = new Connection(cId, srcIp, srcPort, destIp, destPort, udpSocketFd, connType);
-    if (conn->state == State::BAD) {
+    if (conn->state == State::INVALID) {
         Log(ERROR, "error initialising Connection object");
         return -1;
     }
 
     // register the 'recvSegment' event
-    struct event *recvSegment = event_new(eventBase, udpSocketFd, EV_READ|EV_PERSIST, libeventRecvSegment, (void*)conn);
+    struct event *recvSegment = event_new(eventBase, udpSocketFd, EV_READ|EV_PERSIST, libeventOnRecvSegment, (void*)conn);
     event_add(recvSegment, NULL);
 
     if (conn->state == State::CLOSED) {
@@ -126,7 +126,7 @@ int64_t Engine::open(const std::string srcIp,
     } else if (conn->state == State::LISTEN) {
         // wait for initial SYN - do nothing
     } else {
-        // invalid state
+        // invalid starting state
         reset(conn);
         return -1;
     }
@@ -171,17 +171,10 @@ void Engine::close(int64_t cId) {
 // Event handlers
 //////////////////////////////////////////////////////////////////
 
-void Engine::recvSegment(Connection *conn) {
+void Engine::onRecvSegment(Connection *conn) {
     Log(INFO, std::format("segment arrive - state={}", toString(conn->state)));
 
-    // verify connection is valid and open
-    if (!conn) {
-        Log(ERROR, "conn null");
-        return;
-    }
-    auto it = openConnections.find(conn->id);
-    if (it == openConnections.end() || it->second != conn) {
-        Log(ERROR, "engine has no matching open connection");
+    if (!verifyConn(conn)) {
         return;
     }
 
@@ -196,9 +189,11 @@ void Engine::recvSegment(Connection *conn) {
     // process header
     struct Header hdr = (struct Header)*conn->recvSegmentBuffer;
     if (!verifyReceivedHeader(conn, hdr)) {
-        sendRst(conn);
-        conn->state = State::CLOSED;
+        reset(conn);
         return;
+    }
+    if (conn->sendStream.getState() == SendStreamState::INITIALISED) {
+        conn->sendStream.setRwnd(hdr.window);
     }
 
     switch (conn->state) {
@@ -223,8 +218,7 @@ void Engine::recvSegment(Connection *conn) {
                 // send SYN-ACK
                 bool res = sendHandshakeSynAck(conn);
                 if (!res) {
-                    sendRst(conn);
-                    conn->state = State::CLOSED;
+                    reset(conn);
                     return;
                 }
 
@@ -252,8 +246,7 @@ void Engine::recvSegment(Connection *conn) {
                 // verify peer's ACK of our ISS
                 bool res = conn->sendStream.onHandshakeAckRecv(hdr.ackNum);
                 if (!res) {
-                    sendRst(conn);
-                    conn->state = State::CLOSED;
+                    reset(conn);
                     return;
                 }
 
@@ -287,29 +280,84 @@ void Engine::recvSegment(Connection *conn) {
 
                 conn->state = State::ESTABLISHED;
             } else {
-                Log(ERROR, std::format("state=SYN-RECEIVED, didn't receive ACK - invalid - sending RST - {}", hdr.toString()));
+                Log(ERROR, "state=SYN-RECEIVED, segment is not an ACK - invalid");
+                reset(conn);
                 return;
             }
         } break;
         case State::ESTABLISHED: {
+            if (hdr.FIN || hdr.RST) {
+                return;
+            }
+            if (hdr.SYN) {
+                Log(ERROR, std::format("state=ESTABLISHED - SYN bit set - invalid"));
+                reset(conn);
+                return;
+            }
 
+            //
+            // handle ACK
+            //
+            if (hdr.ACK) {
+
+            }
+
+            //
+            // handle payload itself
+            //
+            int payloadBytes = bytesRead - sizeof(hdr);
+            if (payloadBytes == 0) {
+                Log(INFO, "state=ESTABLISHED - empty payload - ignore");
+                return;
+            }
+            uint8_t *payload = conn->recvSegmentBuffer + sizeof(hdr);
+            conn->recvStream.receiveSegment(hdr.seqNum, payloadBytes, payload);
+        } break;
+
+        case State::FIN_WAIT_1: {
+            // verify ack of fin, move to FIN_WAIT_2
+        } break;
+        case State::CLOSE_WAIT: {
+            // In CLOSE_WAIT state, only receiving ACKs of your data stream.
+            // Move from CLOSE_WAIT to LAST_ACK when send last FIN.
+        } break;
+        case State::FIN_WAIT_2: {
+            // receive and ack peer's fin, move to TIME_WAIT
+        } break;
+        case State::TIME_WAIT: {
+            // once enter 
+        } break;
+        case State::LAST_ACK: {
+            // receive ack of fin, move to CLOSED
         } break;
     }
 }
 
+void Engine::onRto(Connection *conn) {
+    if (!verifyConn(conn)) return;
+
+    if (!conn->rto.active) {
+        Log(ERROR, "no pending RTO");
+        return;
+    }
+    bool res = conn->sendStream.onRto(conn->rto.seg);
+    if (!res) {
+        Log(ERROR, "bad RTO");
+        reset(conn);
+        return;
+    }
+}
+
 int64_t Engine::sendSegment(Connection *conn, int64_t n, uint8_t *payloadBuffer) {
+    if (!verifyConn(conn)) return;
+
     if (n > MSS) {
         Log(ERROR, std::format("cannot send payload size > 1 MSS - {}", n));
         return -1;
     }
 
-    Header hdr;
-    hdr.srcPort = conn->srcPort;
-    hdr.destPort = conn->destPort;
-    hdr.seqNum = conn->sendStream.getNxt();
+    Header hdr = makeBaseHeader(conn);
     hdr.ACK = 1;
-    hdr.ackNum = conn->recvStream.getNxt();
-    hdr.window = conn->recvStream.getWnd();
     hdr.setChecksum();
 
     std::memcpy(conn->sendSegmentBuffer, &hdr, sizeof(hdr));
@@ -321,34 +369,50 @@ int64_t Engine::sendSegment(Connection *conn, int64_t n, uint8_t *payloadBuffer)
         Log(ERROR, std::format("error on send() - {}", strerror(errno)));
         return -1;
     }
+    if (bytesSent != bytesToSend) {
+        Log(ERROR, std::format("partial send() - attempted {}, sent {}", bytesToSend, bytesSent));
+        return -1;
+    }
+
+    //
+    // Queue RTO if:
+    //      a) no active RTO, AND;
+    //      b) segment consumes seqnums, i.e. SYN, FIN, or non-zero payload
+    //
+    if (!conn->rto.active && (hdr.SYN || hdr.FIN || n > 0)) {
+        SendSegment seg;
+        seg.seqNum = hdr.seqNum;
+        seg.size = n;
+
+        queueRto(conn, seg);
+    }
+
     return bytesSent;
 }
 
 int64_t Engine::sendSegmentHeaderOnly(Connection *conn, Header &hdr) {
     std::memcpy(conn->sendSegmentBuffer, &hdr, sizeof(hdr));
 
-    int bytesSent = send(conn->udpSocketFd, conn->sendSegmentBuffer, sizeof(hdr), 0);
+    int bytesToSend = sizeof(hdr);
+    int bytesSent = send(conn->udpSocketFd, conn->sendSegmentBuffer, bytesToSend, 0);
     if (bytesSent == -1) {
         Log(ERROR, std::format("error on send() - {}", strerror(errno)));
         return -1;
     }
-    if (bytesSent != sizeof(hdr)) {
-        Log(ERROR, std::format("did not write full header"));
+    if (bytesSent != bytesToSend) {
+        Log(ERROR, std::format("partial send() - attempted {}, sent {}", bytesToSend, bytesSent));
         return -1;
     }
     return bytesSent;
 }
 
 bool Engine::sendHandshakeSyn(Connection *conn) {
-    Header hdr;
-    hdr.srcPort = conn->srcPort;
-    hdr.destPort = conn->destPort;
-    hdr.seqNum = conn->sendStream.getNxt(); // == iss
-    hdr.window = conn->recvStream.getWnd();
+    Header hdr = makeBaseHeader(conn);
+    hdr.SYN = 1;
     hdr.setChecksum();
 
-    int64_t res = sendSegmentHeaderOnly(conn, hdr);
-    if (res == -1) {
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
         return false;
     }
 
@@ -361,18 +425,13 @@ bool Engine::sendHandshakeSyn(Connection *conn) {
 }
 
 bool Engine::sendHandshakeSynAck(Connection *conn) {
-    Header hdr;
-    hdr.srcPort = conn->srcPort;
-    hdr.destPort = conn->destPort;
+    Header hdr = makeBaseHeader(conn);
     hdr.SYN = 1;
-    hdr.seqNum = conn->sendStream.getNxt(); // == iss
     hdr.ACK = 1;
-    hdr.ackNum = conn->recvStream.getNxt();
-    hdr.window = conn->recvStream.getWnd();
     hdr.setChecksum();
 
-    int64_t res = sendSegmentHeaderOnly(conn, hdr);
-    if (res == -1) {
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
         return false;
     }
 
@@ -385,17 +444,29 @@ bool Engine::sendHandshakeSynAck(Connection *conn) {
 }
 
 bool Engine::sendHandshakeAck(Connection *conn) {
-    Header hdr;
-    hdr.srcPort = conn->srcPort;
-    hdr.destPort = conn->destPort;
-    hdr.seqNum = conn->sendStream.getNxt();
+    Header hdr = makeBaseHeader(conn);
     hdr.ACK = 1;
-    hdr.ackNum = conn->recvStream.getNxt();
-    hdr.window = conn->recvStream.getWnd();
     hdr.setChecksum();
 
-    int64_t res = sendSegmentHeaderOnly(conn, hdr);
-    if (res == -1) {
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
+        return false;
+    }
+
+    return true;
+}
+
+bool Engine::sendAck(Connection *conn) {
+    if (!verifyConn(conn)) {
+        return false;
+    }
+
+    Header hdr = makeBaseHeader(conn);
+    hdr.ACK = 1;
+    hdr.setChecksum();
+
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
         return false;
     }
 
@@ -403,7 +474,61 @@ bool Engine::sendHandshakeAck(Connection *conn) {
 }
 
 bool Engine::sendRst(Connection *conn) {
+    Header hdr;
+    hdr.srcPort = conn->srcPort;
+    hdr.destPort = conn->destPort;
+    hdr.RST = 1;
+    hdr.setChecksum();
 
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
+        return false;
+    }
+
+    return true;
+}
+
+bool Engine::sendFin(Connection *conn) {
+    Header hdr = makeBaseHeader(conn);
+    hdr.ACK = 1;
+    hdr.FIN = 1;
+    hdr.setChecksum();
+
+    int64_t sent = sendSegmentHeaderOnly(conn, hdr);
+    if (sent == -1) {
+        return false;
+    }
+
+    return true;
+}
+
+void Engine::queueRto(Connection *conn, SendSegment &seg) {
+    if (!verifyConn(conn)) return;
+
+    struct timeval t;
+    t.tv_usec = RTO_TIMEOUT_MS * 1000;
+    struct event *rto = event_new(eventBase, NULL, EV_TIMEOUT, libeventOnRto, (void*)conn);
+    event_add(rto, &t);
+
+    conn->rto.active = true;
+    conn->rto.seg = seg;
+    conn->rto.event = rto;
+}
+
+void Engine::cancelRto(Connection *conn) {
+    if (!verifyConn(conn)) return;
+
+    if (!conn->rto.active) {
+        Log(INFO, "bad rto cancel - no active rto to cancel");
+        return;
+    }
+
+    int res = event_del(conn->rto.event);
+    if (res == -1) {
+        Log(ERROR, "bad rto cancel - error on event_del()");
+        return;
+    }
+    conn->rto.active = false;
 }
 
 //////////////////////////////////////////////////////////////////
@@ -460,6 +585,16 @@ int Engine::createUdpSocket(const std::string& srcIp,
     return fd;
 }
 
+Header Engine::makeBaseHeader(Connection *conn) {
+    Header hdr{};
+    hdr.srcPort = conn->srcPort;
+    hdr.destPort = conn->destPort;
+    hdr.seqNum = conn->sendStream.getNxt();
+    hdr.ackNum = conn->recvStream.getNxt();
+    hdr.window = conn->recvStream.getWnd();
+    return hdr;
+}
+
 bool Engine::verifyReceivedHeader(Connection *conn, const Header &hdr) {
     if (!(hdr.srcPort == conn->destPort && hdr.destPort == conn->srcPort)) {
         Log(ERROR, std::format("bad header - ports don't match - {}", hdr.toString()));
@@ -472,11 +607,32 @@ bool Engine::verifyReceivedHeader(Connection *conn, const Header &hdr) {
     return true;
 }
 
+bool Engine::verifyConn(Connection *conn) {
+    if (!conn) {
+        Log(ERROR, "conn null");
+        return false;
+    }
+    auto it = openConnections.find(conn->id);
+    if (it == openConnections.end() || it->second != conn) {
+        Log(ERROR, "engine has no matching open connection");
+        return false;
+    }
+    return true;
+}
+
+void Engine::reset(Connection *conn) {
+    if (!verifyConn(conn)) {
+        return;
+    }
+    sendRst(conn);
+    conn->state = State::CLOSED;
+}
+
 //////////////////////////////////////////////////////////////////
 // Libevent callbacks
 //////////////////////////////////////////////////////////////////
 
-void libeventRecvSegment(evutil_socket_t fd, short events, void* arg) {
+void libeventOnRecvSegment(evutil_socket_t fd, short events, void* arg) {
     if (!(events & EV_READ)) {
         Log(ERROR, "EV_READ not triggered");
         return;
@@ -490,5 +646,14 @@ void libeventRecvSegment(evutil_socket_t fd, short events, void* arg) {
         Log(ERROR, "udp socket doesn't match event fd");
         return;
     }
-    Engine::getInstance().recvSegment(conn);
+    Engine::getInstance().onRecvSegment(conn);
+}
+
+void libeventOnRto(evutil_socket_t fd, short events, void* arg) {
+    if (!(events & EV_TIMEOUT)) {
+        Log(ERROR, "EV_READ not triggered");
+        return;
+    }
+    Connection *conn = (Connection*)arg;
+    Engine::getInstance().onRto(conn);
 }

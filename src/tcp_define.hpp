@@ -2,6 +2,7 @@
 #include <string>
 
 #define MSS 1460
+#define RTO_TIMEOUT_MS 50 // ms
 
 enum class State {
     CLOSED,             // closed
@@ -14,7 +15,8 @@ enum class State {
     FIN_WAIT_2,         // sent first FIN, ACK'd by other
     TIME_WAIT,          // received second fin from peer, wait 2 MSL to close
     LAST_ACK,           // sent second fin, waiting on ACK
-    BAD                 // errant state - teardown immediately
+
+    INVALID             // errant state - teardown immediately
 };
 std::string toString(State state);
 
