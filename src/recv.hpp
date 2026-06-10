@@ -75,10 +75,11 @@ public:
 public:
     void init(int64_t _irs);
     void read(int64_t n, uint8_t *outBuffer);
-    void receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr);
+    void receiveSegment(Header &hdr, int64_t payloadSize, uint8_t *payloadPtr);
 
 private:
     void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
+    void readFromBuffer(int64_t pos, uint8_t *dest, int64_t n);
 
     void attemptAck();
     int64_t readyToReadBytes();
@@ -88,6 +89,5 @@ private:
 
 struct RecvSegment {
     int64_t seqNum;
-    int64_t payloadSize;
     int64_t seqNumSize; // total seqnum space it takes up, i.e. payload + SYN/FIN 1-byte contribution
 };

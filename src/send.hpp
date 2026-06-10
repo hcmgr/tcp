@@ -98,13 +98,14 @@ public:
     bool onRto();
 
 private:
-    void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
-
     void attemptSegmentSend();
     int64_t retransmitSegment(SendSegment &seg);
 
     bool queueRto(SendSegment &seg);
     bool cancelRto();
+
+    void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
+    void readFromBuffer(int64_t pos, uint8_t *dest, int64_t n);
 
     int64_t readyToSendBytes();
     int64_t freeSpaceBytes();

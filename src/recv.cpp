@@ -35,7 +35,7 @@ void RecvStream::init(int64_t _irs) {
 
 void RecvStream::read(int64_t n, uint8_t *outBuffer) {
     int64_t bytesAvail = readyToReadBytes();
-    if (n < bytesAvail) {
+    if (bytesAvail < n) {
         //
         // Insufficient data to read.
         //
@@ -45,14 +45,14 @@ void RecvStream::read(int64_t n, uint8_t *outBuffer) {
         return;
     }
 
-    std::memcpy(outBuffer, buffer + readPos, n);
+    readFromBuffer(readPos, outBuffer, n);
     read_ += n;
-    readPos += n;
+    readPos = (read_ - irs) % capacity;
     return;
 }
 
-void RecvStream::receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr) {
-    int64_t seqNumSize = n;
+void RecvStream::receiveSegment(Header &hdr, int64_t payloadSize, uint8_t *payloadPtr) {
+    int64_t seqNumSize = payloadSize;
     if (hdr.SYN || hdr.FIN) {
         seqNumSize += 1;
     }
@@ -73,7 +73,6 @@ void RecvStream::receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr) {
 
     RecvSegment seg;
     seg.seqNum = hdr.seqNum;
-    seg.payloadSize = n;
     seg.seqNumSize = seqNumSize;
 
     // payload buffer position - data sits after any SYN byte
@@ -96,7 +95,7 @@ void RecvStream::receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr) {
             // seg somewhere before curr - place it
             receivedSegments.insert(it, seg);
             cumSegmentSize += seg.seqNumSize;
-            writeToBuffer(payloadPos, payloadPtr, n);
+            writeToBuffer(payloadPos, payloadPtr, payloadSize);
             placed = true;
             break;
         } else if (currR < segL) {
@@ -112,7 +111,7 @@ void RecvStream::receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr) {
         // not placed yet - place at end
         receivedSegments.push_back(seg);
         cumSegmentSize += seg.seqNumSize;
-        writeToBuffer(payloadPos, payloadPtr, n);
+        writeToBuffer(payloadPos, payloadPtr, payloadSize);
     }
 
     //
@@ -122,7 +121,7 @@ void RecvStream::receiveSegment(Header &hdr, int64_t n, uint8_t *payloadPtr) {
         RecvSegment &curr = receivedSegments.front();
         if (nxt == curr.seqNum) {
             nxt += curr.seqNumSize;
-            nxtPos = (nxtPos + curr.seqNumSize) % capacity;
+            nxtPos = (nxt - irs) % capacity;
             cumSegmentSize -= curr.seqNumSize;
             receivedSegments.pop_front();
         } else {
@@ -140,6 +139,14 @@ void RecvStream::writeToBuffer(int64_t pos, uint8_t *src, int64_t n) {
     std::memcpy(buffer + pos, src, firstChunk);
     if (n > firstChunk) {
         std::memcpy(buffer, src + firstChunk, n - firstChunk);
+    }
+}
+
+void RecvStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
+    int64_t firstChunk = std::min(n, capacity - pos);
+    std::memcpy(dest, buffer + pos, firstChunk);
+    if (n > firstChunk) {
+        std::memcpy(dest + firstChunk, buffer, n - firstChunk);
     }
 }
 

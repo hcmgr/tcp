@@ -89,7 +89,7 @@ int64_t SendStream::sendSegment(Header &hdr, int64_t payloadSize) {
     std::memcpy(preSendBuffer, &hdr, sizeof(hdr));
     if (payloadSize > 0) {
         int64_t payloadPos = nxtPos;
-        std::memcpy(preSendBuffer, buffer + payloadPos, payloadSize);
+        readFromBuffer(payloadPos, preSendBuffer + sizeof(hdr), payloadSize);
     }
 
     // send segment
@@ -105,10 +105,7 @@ int64_t SendStream::sendSegment(Header &hdr, int64_t payloadSize) {
 
     // advance nxt
     int64_t seqNumSize = payloadSize;
-    if (hdr.SYN) {
-        seqNumSize += 1;
-    }
-    if (hdr.FIN) {
+    if (hdr.SYN || hdr.FIN) {
         seqNumSize += 1;
     }
     nxt += seqNumSize;
@@ -298,7 +295,7 @@ int64_t SendStream::retransmitSegment(SendSegment &seg) {
     std::memcpy(preSendBuffer, &seg.hdr, sizeof(seg.hdr));
     if (seg.payloadSize > 0) {
         int64_t payloadPos = (unaPos + (seg.seqNum - una)) % capacity;
-        std::memcpy(preSendBuffer, buffer + payloadPos, seg.payloadSize);
+        readFromBuffer(payloadPos, preSendBuffer + sizeof(seg.hdr), seg.payloadSize);
     }
 
     int bytesToSend = sizeof(seg.hdr) + seg.payloadSize;
@@ -346,6 +343,14 @@ void SendStream::writeToBuffer(int64_t pos, uint8_t *src, int64_t n) {
     std::memcpy(buffer + pos, src, firstChunk);
     if (n > firstChunk) {
         std::memcpy(buffer, src + firstChunk, n - firstChunk);
+    }
+}
+
+void SendStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
+    int64_t firstChunk = std::min(n, capacity - pos);
+    std::memcpy(dest, buffer + pos, firstChunk);
+    if (n > firstChunk) {
+        std::memcpy(dest + firstChunk, buffer, n - firstChunk);
     }
 }
 
