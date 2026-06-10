@@ -65,7 +65,7 @@ private:
     Connection *connRef;
 
 public:
-    RecvStream();
+    RecvStream(Connection *conn);
     ~RecvStream();
 
 public:
@@ -89,5 +89,5 @@ private:
 
 struct RecvSegment {
     int64_t seqNum;
-    int64_t seqNumSize; // total seqnum space it takes up, i.e. payload + SYN/FIN 1-byte contribution
+    int64_t size; // payload + SYN/FIN 1-byte contribution
 };

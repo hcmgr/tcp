@@ -33,7 +33,7 @@ Connection::Connection(
     destPort(destPort), 
     udpSocketFd(udpSocketFd),
     sendStream(this),
-    recvStream()
+    recvStream(this)
 {
     if (connType == ConnType::LISTEN) {
         state = State::LISTEN;
@@ -402,7 +402,7 @@ bool Engine::sendHandshakeSyn(Connection *conn) {
     hdr.SYN = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }
@@ -418,7 +418,7 @@ bool Engine::sendHandshakeSynAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }
@@ -433,7 +433,7 @@ bool Engine::sendHandshakeAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }
@@ -448,7 +448,7 @@ bool Engine::sendAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }
@@ -465,7 +465,7 @@ bool Engine::sendRst(Connection *conn) {
     hdr.RST = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }
@@ -481,7 +481,7 @@ bool Engine::sendFin(Connection *conn) {
     hdr.FIN = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendSegment(hdr, 0);
+    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
     if (sent == -1) {
         return false;
     }

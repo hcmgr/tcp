@@ -54,11 +54,12 @@ private:
     uint8_t *preSendBuffer;
 
     // logical seqnum state
-    int64_t iss; // initial send seqnum
-    int64_t una; // first sent and un-ack'd seqnum
-    int64_t nxt; // next seqnum to send
+    int64_t iss;    // initial send seqnum
+    int64_t una;    // first sent and un-ack'd seqnum
+    int64_t nxt;    // next seqnum to send
+    int64_t write_; // next seqnum to write
 
-    // physical buffer state
+    // physical buffer state - 1:1 with the logical seqnums: pos == (seq - iss) % capacity
     int64_t unaPos;
     int64_t nxtPos;
     int64_t writePos;
@@ -116,8 +117,7 @@ private:
 struct SendSegment {
     Header hdr;
     int64_t seqNum;
-    int64_t payloadSize;
-    int64_t seqNumSize; // total seqnum space it takes up, i.e. payload + SYN/FIN 1-byte contribution
+    int64_t size; // payload + SYN/FIN 1-byte contribution
 };
 
 struct Rto {
