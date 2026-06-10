@@ -1,8 +1,19 @@
 #include <cstdint>
 #include <string>
 
+// general
 #define MSS 1460
+
+// send
+#define SEND_BUFFER_CAPACITY 65536
 #define RTO_TIMEOUT_MS 50 // ms
+#define MAX_ISS 1000000
+#define INIT_CWND (MSS*10)
+#define SSTHRESH (MSS*20)
+
+// receive
+#define RECV_BUFFER_CAPACITY 65536
+#define DEFAULT_INIT_RWND 4096
 
 enum class State {
     CLOSED,             // closed

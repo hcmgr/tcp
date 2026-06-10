@@ -16,12 +16,6 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
-struct Rto {
-    SendSegment seg;
-    bool active;
-    struct event *event;
-};
-
 struct Connection {
     // conection id, assigned by Engine, guaranteed unique within this process
     int64_t id;
@@ -40,8 +34,6 @@ struct Connection {
 
     // send stream
     SendStream sendStream;
-    uint8_t *sendSegmentBuffer;
-    int64_t sendSegmentBufferSize;
 
     // recv stream
     RecvStream recvStream;
@@ -57,9 +49,6 @@ struct Connection {
     // pending-ACK state (delayed ACK - piggyback ACKs onto other segments / ACKs)
 
     // pending-send state (waiting until 1 MSS available to send)
-
-    // rto state
-    Rto rto;
 
     Connection(
         int64_t id,
@@ -107,9 +96,12 @@ public:
     void onRecvSegment(Connection *conn);
     void onRto(Connection *conn);
 
-    int64_t sendSegment(Connection *conn, int64_t n, uint8_t *payloadBuffer);
-    int64_t sendSegmentHeaderOnly(Connection *conn, Header &hdr);
+    struct event* queueRto(Connection *conn);
+    bool cancelRto(Connection *conn, struct event *event);
 
+    Header makeBaseHeader(Connection *conn);
+
+public:
     bool sendHandshakeSyn(Connection *conn);
     bool sendHandshakeSynAck(Connection *conn);
     bool sendHandshakeAck(Connection *conn);
@@ -117,24 +109,16 @@ public:
     bool sendRst(Connection *conn);
     bool sendFin(Connection *conn);
 
-    void queueRto(Connection *conn, SendSegment &seg);
-    void cancelRto(Connection *conn);
-
 private:
     int createUdpSocket(const std::string& srcIp,
                         int srcPort,
                         const std::string& dstIp,
                         int dstPort);
-    
-    Header makeBaseHeader(Connection *conn);
     bool verifyReceivedHeader(Connection *conn, const Header &hdr);
     bool verifyConn(Connection *conn);
     void reset(Connection *conn);
 };
 
-//////////////////////////////////////////////////////////////////
-// Libevent callbacks
-//////////////////////////////////////////////////////////////////
 void libeventOnRecvSegment(evutil_socket_t fd, short events, void* arg);
 void libeventOnRto(evutil_socket_t fd, short events, void* arg);
 
