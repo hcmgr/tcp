@@ -31,7 +31,6 @@ void SendStream::setRwnd(int64_t _rwnd) { rwnd = _rwnd; }
 //////////////////////////////////////////////////////////////////
 // main public api:
 //      init()
-//      sendSegment()
 //      write()
 //      onAck()
 //      onRto()
@@ -63,8 +62,8 @@ void SendStream::init(int64_t initRwnd) {
     cwnd = INT64_MAX;
     rwnd = initRwnd;
 
-    unaPos = 0;
-    nxtPos = 0;
+    unaPos = (una - iss) % capacity;
+    nxtPos = (nxt - iss) % capacity;
     writePos = 0;
 
     state = SendStreamState::INITIALISED;
@@ -72,60 +71,6 @@ void SendStream::init(int64_t initRwnd) {
 
 void SendStream::init() {
     init(DEFAULT_INIT_RWND);
-}
-
-int64_t SendStream::sendSegment(Header &hdr, int64_t payloadSize) {
-    if (payloadSize > MSS) {
-        Log(ERROR, std::format("cannot send payload size > 1 MSS - {}", payloadSize));
-        return -1;
-    }
-    int bytesToSend = sizeof(hdr) + payloadSize;
-    if (getWnd() < bytesToSend) {
-        Log(INFO, std::format("no send attempt - wnd (cwnd={}, rwnd={}) < bytesToSend ({})", cwnd, rwnd, bytesToSend));
-        return -1;
-    }
-
-    // write header + payload to intermediate buffer
-    std::memcpy(preSendBuffer, &hdr, sizeof(hdr));
-    if (payloadSize > 0) {
-        int64_t payloadPos = nxtPos;
-        readFromBuffer(payloadPos, preSendBuffer + sizeof(hdr), payloadSize);
-    }
-
-    // send segment
-    int bytesSent = send(connRef->udpSocketFd, preSendBuffer, bytesToSend, 0);
-    if (bytesSent == -1) {
-        Log(ERROR, std::format("error on send() - {}", strerror(errno)));
-        return -1;
-    }
-    if (bytesSent != bytesToSend) {
-        Log(ERROR, std::format("partial send() - attempted {}, sent {}", bytesToSend, bytesSent));
-        return -1;
-    }
-
-    // advance nxt
-    int64_t seqNumSize = payloadSize;
-    if (hdr.SYN || hdr.FIN) {
-        seqNumSize += 1;
-    }
-    nxt += seqNumSize;
-    nxtPos = (nxt - iss) % capacity;
-
-    // queue in-flight segment
-    SendSegment seg;
-    seg.hdr = hdr;
-    seg.seqNum = hdr.seqNum;
-    seg.payloadSize = payloadSize;
-    seg.seqNumSize = seqNumSize;
-
-    inFlightSegments.push_back(seg);
-
-    // queue rto if: a) no active RTO, and b) segment consumes seqnums
-    if (!rto.active && seqNumSize > 0) {
-        queueRto(seg);
-    }
-
-    return bytesSent;
 }
 
 void SendStream::write(int64_t n, uint8_t *inBuffer) {
@@ -144,8 +89,8 @@ void SendStream::write(int64_t n, uint8_t *inBuffer) {
     writeToBuffer(writePos, inBuffer, n);
     writePos = (writePos + n) % capacity;
 
-    // new data available => trigger segment-send-attempt
-    attemptSegmentSend();
+    // new data available - send ready segments
+    sendReadySegments();
 }
 
 bool SendStream::onAck(int64_t ackNum) {
@@ -215,8 +160,8 @@ bool SendStream::onAck(int64_t ackNum) {
         }
     }
 
-    // ack means more data available => attempt segment sends
-    attemptSegmentSend();
+    // new data available - send ready segments
+    sendReadySegments();
 
     return true;
 }
@@ -263,7 +208,7 @@ bool SendStream::onRto() {
 // private
 //////////////////////////////////////////////////////////////////
 
-void SendStream::attemptSegmentSend() {
+void SendStream::sendReadySegments() {
     //
     // send as many 1 MSS segments as we have available
     //
@@ -271,7 +216,7 @@ void SendStream::attemptSegmentSend() {
         Header hdr = Engine::getInstance().makeBaseHeader(connRef);
         hdr.ACK = 1;
 
-        int64_t bytesSent = sendSegment(hdr, MSS);
+        int64_t bytesSent = sendNextSegment(hdr, MSS);
         if (bytesSent == -1) {
             return;
         }
@@ -284,6 +229,63 @@ void SendStream::attemptSegmentSend() {
     // In future, queue a pending-send to expire after X ms. If still not sent by then, send
     // pending bytes anyway.
     //
+}
+
+//
+// Send segment with header `hdr` and payload of `payloadSize` bytes taken from nxt onwards.
+//
+int64_t SendStream::sendNextSegment(Header &hdr, int64_t payloadSize) {
+    if (payloadSize > MSS) {
+        Log(ERROR, std::format("cannot send payload size > 1 MSS - {}", payloadSize));
+        return -1;
+    }
+    int bytesToSend = sizeof(hdr) + payloadSize;
+    if (getWnd() < bytesToSend) {
+        Log(INFO, std::format("no send attempt - wnd (cwnd={}, rwnd={}) < bytesToSend ({})", cwnd, rwnd, bytesToSend));
+        return -1;
+    }
+
+    // write header + payload to intermediate buffer
+    std::memcpy(preSendBuffer, &hdr, sizeof(hdr));
+    if (payloadSize > 0) {
+        int64_t payloadPos = nxtPos;
+        readFromBuffer(payloadPos, preSendBuffer + sizeof(hdr), payloadSize);
+    }
+
+    // send segment
+    int bytesSent = send(connRef->udpSocketFd, preSendBuffer, bytesToSend, 0);
+    if (bytesSent == -1) {
+        Log(ERROR, std::format("error on send() - {}", strerror(errno)));
+        return -1;
+    }
+    if (bytesSent != bytesToSend) {
+        Log(ERROR, std::format("partial send() - attempted {}, sent {}", bytesToSend, bytesSent));
+        return -1;
+    }
+
+    // advance nxt
+    int64_t seqNumSize = payloadSize;
+    if (hdr.SYN || hdr.FIN) {
+        seqNumSize += 1;
+    }
+    nxt += seqNumSize;
+    nxtPos = (nxt - iss) % capacity;
+
+    // queue in-flight segment
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.seqNum = hdr.seqNum;
+    seg.payloadSize = payloadSize;
+    seg.seqNumSize = seqNumSize;
+
+    inFlightSegments.push_back(seg);
+
+    // queue rto if: a) no active RTO, and b) segment consumes seqnums
+    if (!rto.active && seqNumSize > 0) {
+        queueRto(seg);
+    }
+
+    return bytesSent;
 }
 
 int64_t SendStream::retransmitSegment(SendSegment &seg) {

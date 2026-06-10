@@ -92,13 +92,13 @@ public:
     void init(int64_t initRwnd);
     void init();
 
-    int64_t sendSegment(Header &hdr, int64_t payloadSize);
+    int64_t sendNextSegment(Header &hdr, int64_t payloadSize);
     void write(int64_t n, uint8_t *inBuffer);
     bool onAck(int64_t ackNum);
     bool onRto();
 
 private:
-    void attemptSegmentSend();
+    void sendReadySegments();
     int64_t retransmitSegment(SendSegment &seg);
 
     bool queueRto(SendSegment &seg);

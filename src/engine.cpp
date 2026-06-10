@@ -314,13 +314,13 @@ void Engine::onRecvSegment(Connection *conn) {
             //
             // handle payload itself
             //
-            int payloadBytes = bytesRead - sizeof(hdr);
-            if (payloadBytes == 0) {
+            int payloadSize = bytesRead - sizeof(hdr);
+            if (payloadSize == 0) {
                 Log(INFO, "state=ESTABLISHED - empty payload - ignore");
                 return;
             }
             uint8_t *payload = conn->recvSegmentBuffer + sizeof(hdr);
-            conn->recvStream.receiveSegment(hdr, payloadBytes, payload);
+            conn->recvStream.receiveSegment(hdr, payloadSize, payload);
         } break;
 
         case State::FIN_WAIT_1: {
