@@ -140,9 +140,26 @@ int64_t Engine::open(const std::string srcIp,
     }
     openConnections[cId] = conn;
 
-    //
-    // put open() call to sleep, waiting on connection state == ESTABLISHED
-    //
+    // put open() call to sleep, waiting on connection to move out of handshake state
+    std::unique_lock<std::mutex> ul(conn->pendingOpenMutex);
+    conn->pendingOpenCv.wait(ul, [&] { 
+        State state = conn->state;
+        return (
+            state != State::LISTEN && 
+            state != State::SYN_SENT &&
+            state != State::SYN_RECEIVED
+        );
+    });
+
+    if (conn->state != State::ESTABLISHED) {
+        if (conn->state == State::CLOSED) {
+            // already torn down - do nothing
+        } else {
+            // bad state - teardown
+            reset(conn);
+        }
+        return -1;
+    }
 
     connectionIdGen++;
     return cId;
@@ -204,6 +221,7 @@ void Engine::onRecvSegment(Connection *conn) {
         case State::LISTEN: {
             if (hdr.FIN || hdr.RST) {
                 Log(ERROR, std::format("state=LISTEN - FIN/RST set - invalid - sending RST to teardown connection - {}", hdr.toString()));
+                reset(conn);
                 return;
             }
 
@@ -235,6 +253,7 @@ void Engine::onRecvSegment(Connection *conn) {
         case State::SYN_SENT: {
             if (hdr.FIN || hdr.RST) {
                 Log(ERROR, std::format("state=SYN_SENT - FIN/RST set - invalid - sending RST"));
+                reset(conn);
                 return;
             }
 
@@ -257,10 +276,12 @@ void Engine::onRecvSegment(Connection *conn) {
                 // send ACK
                 sendHandshakeAck(conn);
 
+                // enter stablished state - wake any pending open() calls
                 conn->state = State::ESTABLISHED;
+                conn->pendingOpenCv.notify_one();
             } else {
-                // TODO - send RST
                 Log(ERROR, std::format("state=SYN-SENT, didn't receive SYN-ACK - invalid - sending RST - {}", hdr.toString()));
+                reset(conn);
                 return;
             }
         } break;
@@ -282,7 +303,9 @@ void Engine::onRecvSegment(Connection *conn) {
                     return;
                 }
 
+                // enter stablished state - wake any pending open() calls
                 conn->state = State::ESTABLISHED;
+                conn->pendingOpenCv.notify_one();
             } else {
                 Log(ERROR, "state=SYN-RECEIVED, segment is not an ACK - invalid");
                 reset(conn);
@@ -598,6 +621,7 @@ bool Engine::verifyConn(Connection *conn) {
 void Engine::reset(Connection *conn) {
     sendRst(conn);
     conn->state = State::CLOSED;
+    openConnections.erase(conn->id);
 }
 
 //////////////////////////////////////////////////////////////////

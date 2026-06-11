@@ -41,10 +41,16 @@ struct Connection {
     int64_t recvSegmentBufferSize;
 
     // pending-open state (users sleeping open() calls - waiting to reach ESTABLISHED state)
+    std::mutex pendingOpenMutex;
+    std::condition_variable pendingOpenCv;
 
     // pending-read state (users sleeping read() calls - waiting on available data)
+    std::mutex pendingReadMutex;
+    std::condition_variable pendingReadCv;
 
     // pending-close state (users sleeping on close() calls - waiting to reach CLOSED state)
+    std::mutex pendingCloseMutex;
+    std::condition_variable pendingCloseCv;
 
     // pending-ACK state (delayed ACK - piggyback ACKs onto other segments / ACKs)
 

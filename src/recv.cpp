@@ -138,7 +138,7 @@ void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
 }
 
 void RecvStream::writeToBuffer(int64_t pos, uint8_t *src, int64_t n) {
-    int64_t firstChunk = std::min(n, capacity - pos);
+    int64_t firstChunk = std::min<int64_t>(n, capacity - pos);
     std::memcpy(buffer + pos, src, firstChunk);
     if (n > firstChunk) {
         std::memcpy(buffer, src + firstChunk, n - firstChunk);
@@ -146,7 +146,7 @@ void RecvStream::writeToBuffer(int64_t pos, uint8_t *src, int64_t n) {
 }
 
 void RecvStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
-    int64_t firstChunk = std::min(n, capacity - pos);
+    int64_t firstChunk = std::min<int64_t>(n, capacity - pos);
     std::memcpy(dest, buffer + pos, firstChunk);
     if (n > firstChunk) {
         std::memcpy(dest + firstChunk, buffer, n - firstChunk);

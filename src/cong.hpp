@@ -37,13 +37,12 @@ private:
     int64_t cwnd;
     int64_t ssthresh;
 public:
-    CongestionController() 
-        : cwnd(INIT_CWND), ssthresh(SSTHRESH) {}
-    ~CongestionController() {}
+    CongestionController();
+    ~CongestionController();
 public:
-    int64_t onAck() {}
-    int64_t onTripleDupAck() {}
-    int64_t onRto() {}
+    int64_t onAck();
+    int64_t onTripleDupAck();
+    int64_t onRto();
 public:
-    int64_t getCwnd() { return cwnd; }
+    int64_t getCwnd();
 };
