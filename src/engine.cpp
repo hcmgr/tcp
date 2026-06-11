@@ -8,6 +8,7 @@
 #include <thread>
 #include <format>
 #include <sys/ioctl.h>
+#include <cassert>
 
 #include <event2/event.h>
 
@@ -230,23 +231,34 @@ int64_t Engine::write(int64_t cId, int n, uint8_t *inBuffer) {
     return 0;
 }
 
-void Engine::close(int64_t cId) {
+bool Engine::close(int64_t cId) {
     auto it = openConnections.find(cId);
     if (it == openConnections.end()) {
         Log(ERROR, std::format("couldn't find connection: {}", cId));
-        return;
+        return false;
     }
     Connection* conn = it->second;
+    if (!(conn->state == State::ESTABLISHED || conn->state == State::CLOSE_WAIT)) {
+        Log(ERROR, std::format("invalid state for close() - {}", toString(conn->state)));
+        return false;
+    }
 
-    // queue FIN segment
+    // queue Fin segment
     sendFin(conn);
+
     if (conn->state == State::ESTABLISHED) {
         conn->state = State::FIN_WAIT_1;
     } else if (conn->state == State::CLOSE_WAIT) {
         conn->state = State::FIN_WAIT_2;
-    } else {
-        // invalid
     }
+
+    //
+    // TODO - determine what to do here
+    //      - put to sleep and wait for CLOSED?
+    //      - something else?
+    //
+
+    return true;
 }
 
 //////////////////////////////////////////////////////////////////

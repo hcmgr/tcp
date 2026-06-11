@@ -96,7 +96,7 @@ public:
                   ConnType connType);
     int64_t read(int64_t cId, int n, uint8_t *outBuffer);
     int64_t write(int64_t cId, int n, uint8_t *inBuffer);
-    void close(int64_t cId);
+    bool close(int64_t cId);
 
 public:
     void onRecvSegment(Connection *conn);

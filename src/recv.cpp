@@ -53,9 +53,7 @@ int64_t RecvStream::read(int64_t n, uint8_t *outBuffer) {
 }
 
 void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
-    //
-    // ensure within range: [nxt, nxt + wnd)
-    //
+    // verify segment is in range: [nxt, nxt + wnd)
     if (seg.hdr.seqNum < nxt) {
         Log(ERROR, std::format("dropping already-received segment (seqNum {} < nxt {}): {}", seg.hdr.seqNum, nxt));
         return;
@@ -63,6 +61,12 @@ void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
     int64_t wndEnd = nxt + freeSpaceBytes(); // first seqnum past the receive window
     if (seg.hdr.seqNum + seg.size - 1 >= wndEnd) {
         Log(ERROR, std::format("received segment outside window - seqNum + size - 1 ({}) >= wndEnd ({})", seg.hdr.seqNum + seg.size - 1, wndEnd));
+        return;
+    }
+
+    // verify segment doesn't breach FIN seqnum
+    if (final_ >= 0 && seg.hdr.seqNum + seg.size > final_) {
+        Log(ERROR, std::format("received segment ({}) past FIN seqnum ({})", seg.toString(), final_));
         return;
     }
 
@@ -136,12 +140,13 @@ void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
 
     // ack with acknum == updated nxt
     sendAck();
+
+    // handle peer FIN
     if (seg.hdr.FIN) {
-        state = RecvStreamState::FINISHED;
-        final_ = nxt;
+        final_ = seg.hdr.seqNum + seg.size;
 
         //
-        // We force a 'final seqnum' to prevent users reading anything after FIN. 
+        // We force a final_ seqnum to prevent users reading past FIN.
         //
         // Example scenario:
         //      Peer sends:
@@ -154,12 +159,20 @@ void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
         //          1000-1499 - ACK,FIN     => nxt = ?
         //
         // How do we handle?
-        //      When 1500-1999 arrives out of order, our nxt stays at 1000 (we don't move nxt) 
+        //      When 1500-1999 arrives out of order, our nxt stays at 1000 (we don't move nxt)
         //      until we have contiguous segments.
         //      So, when 1000-1499 arrives, nxt is at 1000. We process it as FIN, and thus mark
         //      final_ = 1500.
         //      So, user cannot read the 1500-1999 bytes.
         //
+    }
+
+    //
+    // Stream finished once nxt advances past final_, i.e. once all segments have arrived 
+    // and are contiguous before final_.
+    //
+    if (state != RecvStreamState::FINISHED && final_ >= 0 && nxt > final_) {
+        state = RecvStreamState::FINISHED;
     }
 }
 
