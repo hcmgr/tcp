@@ -161,6 +161,7 @@ int64_t Engine::open(const std::string srcIp,
         return -1;
     }
 
+    // connection successfully reached established state
     connectionIdGen++;
     return cId;
 }

@@ -64,9 +64,7 @@ private:
     int64_t nxtPos;
     int64_t writePos;
 
-    // wnd == min(cwnd, rwnd) == max un-ack'd bytes that can be in-flight
-    int64_t cwnd;
-    int64_t rwnd;
+    int64_t rwnd; // peer's receive window (updated by setRwnd())
 
     std::deque<SendSegment> inFlightSegments;
 
@@ -75,8 +73,11 @@ private:
     // retransmission
     Rto rto;
 
-    // congestion control
+    // congestion controller
     CongestionController cong;
+
+    // last 2 acks received - for fast retransmit on triple-duplicate ack
+    int64_t lastAcks[2];
 
     // ref back to owning Connection
     Connection *connRef;
@@ -103,7 +104,7 @@ public:
 
 private:
     void sendReadySegments();
-    int64_t retransmitOldestSegment(SendSegment &seg);
+    int64_t retransmitOldestSegment();
 
     bool queueRto(SendSegment &seg);
     bool cancelRto();

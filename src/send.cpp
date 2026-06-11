@@ -94,7 +94,16 @@ void SendStream::write(int64_t n, uint8_t *inBuffer) {
 }
 
 bool SendStream::onAck(int64_t ackNum) {
-    // ackNum is meaningful if its in the range: [una, nxt), i.e. if its ack'ing unack'd bytes
+    bool tripleDupAck = false;
+    if (ackNum == lastAcks[0] && ackNum == lastAcks[1]) {
+        tripleDupAck = true;
+        std::swap(lastAcks[0], lastAcks[1]);
+        lastAcks[1] = ackNum;
+    }
+
+    //
+    // ack meaningful if its in range [una, nxt), i.e. if its ack'ing un-ack'd bytes
+    //
     if (ackNum < una) {
         Log(ERROR, std::format("received ackNum ({}) < una ({}) - invalid", ackNum, una));
         return false;
@@ -104,9 +113,19 @@ bool SendStream::onAck(int64_t ackNum) {
         return false;
     }
 
-    //
-    // TODO - handle triple duplicate ack
-    //
+    // duplicate ack
+    if (ackNum == una) {
+        if (tripleDupAck) {
+            // triple duplicate ack - fast retransmit
+            int64_t sent = retransmitOldestSegment();
+            if (sent == -1) {
+                return false;
+            }
+        } else {
+            // normal duplicate ack - do nothing
+        }
+        return true;
+    }
 
     // advance una, removing inFlightSegments as necessary
     while (!inFlightSegments.empty()) {
@@ -191,7 +210,7 @@ bool SendStream::onRto() {
     }
 
     // retransmit
-    int64_t bytesSent = retransmitOldestSegment(oldestSeg);
+    int64_t bytesSent = retransmitOldestSegment();
     if (bytesSent == -1) {
         return false;
     }
@@ -303,7 +322,8 @@ int64_t SendStream::sendNextSegment(SendSegment &seg) {
     return bytesSent;
 }
 
-int64_t SendStream::retransmitOldestSegment(SendSegment &seg) {
+int64_t SendStream::retransmitOldestSegment() {
+    SendSegment &seg = inFlightSegments.front();
     if (seg.hdr.seqNum != una) {
         Log(ERROR, std::format("retransmitSegment invalid - seqNum {} != una {}, i.e. segment is not oldest un-ack'd segment", seg.hdr.seqNum, una));
         return -1;
