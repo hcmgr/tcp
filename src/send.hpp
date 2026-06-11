@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "utils.hpp"
+#include "cong.hpp"
 
 struct SendSegment;
 struct Rto;
@@ -73,6 +74,9 @@ private:
 
     // retransmission
     Rto rto;
+
+    // congestion control
+    CongestionController cong;
 
     // ref back to owning Connection
     Connection *connRef;

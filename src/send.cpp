@@ -23,7 +23,6 @@ SendStream::~SendStream() {
 
 int64_t SendStream::getIss() { return iss; }
 int64_t SendStream::getNxt() { return nxt; }
-int64_t SendStream::getWnd() { return std::min<int64_t>(cwnd, rwnd); }
 SendStreamState SendStream::getState() { return state; }
 void SendStream::setRwnd(int64_t _rwnd) { rwnd = _rwnd; }
 
@@ -62,7 +61,6 @@ void SendStream::init(int64_t initRwnd) {
     nxtPos = 0;
     writePos = 0;
 
-    cwnd = INT64_MAX;
     rwnd = initRwnd;
 
     state = SendStreamState::INITIALISED;
@@ -240,6 +238,9 @@ void SendStream::sendReadySegments() {
     // In future, queue a pending-send to expire after X ms. If still not sent by then, send
     // pending bytes anyway.
     //
+    // Also, perhaps pin it to our window size - i.e. account for window size at this point,
+    // not just in sendNextSegment().
+    //
 }
 
 int64_t SendStream::sendNextSegment(SendSegment &seg) {
@@ -253,7 +254,16 @@ int64_t SendStream::sendNextSegment(SendSegment &seg) {
     }
     int bytesToSend = sizeof(seg.hdr) + seg.size;
 
-    // TODO - check congestion window
+    // check window
+    int64_t sendWnd = std::min<int64_t>(cong.getCwnd(), rwnd);
+    if (seg.size > sendWnd) {
+        Log(INFO,
+            std::format(
+                "payload size ({}) > wnd ({}) == min(cwnd ({}), rwnd ({})), wait for larger window size", 
+                seg.size, sendWnd, cong.getCwnd(), rwnd));
+        // not an error - just wait for larger window size
+        return 0;
+    }
 
     // write header + payload to intermediate buffer
     std::memcpy(preSendBuffer, &seg.hdr, sizeof(seg.hdr));
@@ -297,6 +307,17 @@ int64_t SendStream::retransmitOldestSegment(SendSegment &seg) {
     if (seg.hdr.seqNum != una) {
         Log(ERROR, std::format("retransmitSegment invalid - seqNum {} != una {}, i.e. segment is not oldest un-ack'd segment", seg.hdr.seqNum, una));
         return -1;
+    }
+
+    // check window
+    int64_t sendWnd = std::min<int64_t>(cong.getCwnd(), rwnd);
+    if (seg.size > sendWnd) {
+        Log(INFO,
+            std::format(
+                "payload size ({}) > wnd ({}) == min(cwnd ({}), rwnd ({})), wait for larger window size", 
+                seg.size, sendWnd, cong.getCwnd(), rwnd));
+        // not an error - just wait for larger window size
+        return 0;
     }
 
     std::memcpy(preSendBuffer, &seg.hdr, sizeof(seg.hdr));
