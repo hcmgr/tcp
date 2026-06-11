@@ -174,6 +174,14 @@ int64_t Engine::read(int64_t cId, int n, uint8_t *outBuffer) {
         return -1;
     }
     Connection* conn = it->second;
+    if (!(conn->state == State::ESTABLISHED ||
+          conn->state == State::FIN_WAIT_1 ||
+          conn->state == State::FIN_WAIT_2 ||
+          conn->state == State::CLOSE_WAIT))
+    {
+        Log(ERROR, std::format("invalid state for read() - {}", toString(conn->state)));
+        return -1;
+    }
 
     int64_t bytesAvail = conn->recvStream.readyToReadBytes();
     if (bytesAvail >= n) {
@@ -203,6 +211,10 @@ int64_t Engine::write(int64_t cId, int n, uint8_t *inBuffer) {
         return -1;
     }
     Connection* conn = it->second;
+    if (!(conn->state == State::ESTABLISHED || conn->state == State::CLOSE_WAIT)) {
+        Log(ERROR, std::format("invalid state for write() - {}", toString(conn->state)));
+        return -1;
+    }
 
     int64_t freeSpaceAvail = conn->sendStream.freeSpaceBytes();
     if (freeSpaceAvail >= n) {
@@ -226,6 +238,15 @@ void Engine::close(int64_t cId) {
     }
     Connection* conn = it->second;
 
+    // queue FIN segment
+    sendFin(conn);
+    if (conn->state == State::ESTABLISHED) {
+        conn->state = State::FIN_WAIT_1;
+    } else if (conn->state == State::CLOSE_WAIT) {
+        conn->state = State::FIN_WAIT_2;
+    } else {
+        // invalid
+    }
 }
 
 //////////////////////////////////////////////////////////////////

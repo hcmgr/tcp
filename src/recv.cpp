@@ -27,6 +27,7 @@ void RecvStream::init(int64_t _irs) {
     irs = _irs;
     nxt = irs + 1; // consumed IRS from SYN already
     read_ = irs + 1; // consumed IRS from SYN already
+    final_ = -1; // set on FIN receive
 
     readPos = 0;
     nxtPos = 0;
