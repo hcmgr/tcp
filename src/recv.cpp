@@ -14,6 +14,7 @@ RecvStream::~RecvStream() {
 
 int64_t RecvStream::getNxt() { return nxt; }
 int64_t RecvStream::getWnd() { return freeSpaceBytes(); }
+RecvStreamState RecvStream::getState() { return state; }
 
 void RecvStream::init(int64_t _irs) {
     capacity = RECV_BUFFER_CAPACITY;
@@ -131,6 +132,34 @@ void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
             break;
         }
     }
+
+    // ack with acknum == updated nxt
+    sendAck();
+    if (seg.hdr.FIN) {
+        state = RecvStreamState::FINISHED;
+        final_ = nxt;
+
+        //
+        // We force a 'final seqnum' to prevent users reading anything after FIN. 
+        //
+        // Example scenario:
+        //      Peer sends:
+        //          500-999   - ACK
+        //          1000-1499 - ACK,FIN    [end of stream]
+        //          1500-1999 - ACK        [erroneous extra segment]
+        //      Tcp receives out of order:
+        //          500-999   - ACK         => nxt = 1000
+        //          1500-1999 - ACK         => nxt = 1000 (still)
+        //          1000-1499 - ACK,FIN     => nxt = ?
+        //
+        // How do we handle?
+        //      When 1500-1999 arrives out of order, our nxt stays at 1000 (we don't move nxt) 
+        //      until we have contiguous segments.
+        //      So, when 1000-1499 arrives, nxt is at 1000. We process it as FIN, and thus mark
+        //      final_ = 1500.
+        //      So, user cannot read the 1500-1999 bytes.
+        //
+    }
 }
 
 void RecvStream::writeToBuffer(int64_t pos, uint8_t *src, int64_t n) {
@@ -149,7 +178,7 @@ void RecvStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
     }
 }
 
-void RecvStream::attemptAck() {
+void RecvStream::sendAck() {
     //
     // For now, send acks immediately on receipt of new data
     // Later, implement delayed acks:

@@ -260,9 +260,11 @@ void Engine::onRecvSegment(Connection *conn) {
 
     switch (conn->state) {
         case State::LISTEN: {
-            if (hdr.FIN || hdr.RST) {
-                Log(ERROR, std::format("state=LISTEN - FIN/RST set - invalid - sending RST to teardown connection - {}", hdr.toString()));
-                reset(conn);
+            if (hdr.RST) {
+                return;
+            }
+            if (hdr.FIN) {
+                Log(ERROR, "state=SYN_SENT - FIN invalid in this state");
                 return;
             }
 
@@ -287,14 +289,16 @@ void Engine::onRecvSegment(Connection *conn) {
 
                 conn->state = State::SYN_RECEIVED;
             } else {
-                Log(ERROR, std::format("state=LISTEN, didn't receive SYN - invalid - {}", hdr.toString()));
+                Log(ERROR, std::format("state=LISTEN - didn't receive SYN - invalid - {}", hdr.toString()));
                 return;
             }
         } break;
         case State::SYN_SENT: {
-            if (hdr.FIN || hdr.RST) {
-                Log(ERROR, std::format("state=SYN_SENT - FIN/RST set - invalid - sending RST"));
-                reset(conn);
+            if (hdr.RST) {
+                return;
+            }
+            if (hdr.FIN) {
+                Log(ERROR, "state=SYN_SENT - FIN invalid in this state");
                 return;
             }
 
@@ -321,13 +325,17 @@ void Engine::onRecvSegment(Connection *conn) {
                 conn->state = State::ESTABLISHED;
                 conn->pendingOpenCv.notify_one();
             } else {
-                Log(ERROR, std::format("state=SYN-SENT, didn't receive SYN-ACK - invalid - sending RST - {}", hdr.toString()));
+                Log(ERROR, std::format("state=SYN-SENT - didn't receive SYN-ACK - invalid - sending RST - {}", hdr.toString()));
                 reset(conn);
                 return;
             }
         } break;
         case State::SYN_RECEIVED: {
-            if (hdr.FIN || hdr.RST) {
+            if (hdr.RST) {
+                return;
+            }
+            if (hdr.FIN) {
+                Log(ERROR, "state=SYN_RECEIVED - FIN invalid in this state");
                 return;
             }
 
@@ -348,17 +356,17 @@ void Engine::onRecvSegment(Connection *conn) {
                 conn->state = State::ESTABLISHED;
                 conn->pendingOpenCv.notify_one();
             } else {
-                Log(ERROR, "state=SYN-RECEIVED, segment is not an ACK - invalid");
+                Log(ERROR, "state=SYN-RECEIVED - segment is not an ACK - invalid");
                 reset(conn);
                 return;
             }
         } break;
         case State::ESTABLISHED: {
-            if (hdr.FIN || hdr.RST) {
+            if (hdr.RST) {
                 return;
             }
             if (hdr.SYN) {
-                Log(ERROR, std::format("state=ESTABLISHED - SYN bit set - invalid"));
+                Log(ERROR, std::format("state=ESTABLISHED - SYN invalid in this state"));
                 reset(conn);
                 return;
             }
@@ -369,7 +377,7 @@ void Engine::onRecvSegment(Connection *conn) {
             if (hdr.ACK) {
                 bool res = conn->sendStream.onAck(hdr.ackNum);
                 if (!res) {
-                    Log(ERROR, std::format("state=ESTABLISHED, invalid ACK - {}", hdr.toString()));
+                    Log(ERROR, std::format("state=ESTABLISHED - invalid ACK - {}", hdr.toString()));
                     reset(conn);
                     return;
                 }
@@ -386,22 +394,46 @@ void Engine::onRecvSegment(Connection *conn) {
             seg.size = payloadSize;
 
             conn->recvStream.receiveSegment(seg, payloadPtr);
+
+            //
+            // handle FIN
+            //
+            if (hdr.FIN) {
+                // verify receiveSegment processed FIN, queued ACK of FIN, and closed recv stream
+                if (conn->recvStream.getState() != RecvStreamState::FINISHED) {
+                    Log(ERROR, "state=ESTABLISHED - FIN received, yet recvStream not in FINISHED state");
+                    reset(conn);
+                    return;
+                }
+                conn->state = State::CLOSE_WAIT;
+            } else {
+                conn->state = State::ESTABLISHED;
+            }
         } break;
 
         case State::FIN_WAIT_1: {
-            // verify ack of fin, move to FIN_WAIT_2
+            // [got here from ESTABLISHED on a user close() call, which sent FIN already]
+            // waiting for ACK of your FIN, can still receive peer data
+            // if receive ACK of your FIN only, go to FIN_WAIT_2
+            // if receive ACK of your FIN AND peer FIN, go to TIME_WAIT
         } break;
         case State::CLOSE_WAIT: {
-            // In CLOSE_WAIT state, only receiving ACKs of your data stream.
-            // Move from CLOSE_WAIT to LAST_ACK when send last FIN.
+            // have received peer FIN, still sending own data as normal
+            // on own user close() call, send FIN, and go to LAST_ACK
         } break;
         case State::FIN_WAIT_2: {
-            // receive and ack peer's fin, move to TIME_WAIT
+            // [got here from FIN_WAIT_1 on ACK of own FIN]
+            // waiting for peer FIN
+            // if receive peer FIN, ack it, and go to TIME_WAIT
         } break;
         case State::TIME_WAIT: {
+            // [got here from FIN_WAIT_2 on receive peer FIN]
+            // have sent ACK of peer FIN already, just waiting 2 MSL
+            // on 2 MSL, go to CLOSED
         } break;
         case State::LAST_ACK: {
-            // receive ack of fin, move to CLOSED
+            // [got here from CLOSE_WAIT on user close() call]
+            // if receive ACK of own FIN, go to closed
         } break;
     }
 }

@@ -6,8 +6,9 @@
 struct RecvSegment;
 
 enum class RecvStreamState {
-    CLOSED,
-    INITIALISED
+    CLOSED,         // pre-open
+    INITIALISED,       
+    FINISHED        // post-FIN
 };
 
 /**
@@ -48,9 +49,10 @@ private:
     int64_t capacity;
 
     // logical seqnum state
-    int64_t irs; // initial receive seqnum
-    int64_t nxt; // next seqnum to receive
-    int64_t read_; // next seqnum to read
+    int64_t irs;    // initial receive seqnum
+    int64_t nxt;    // next seqnum to receive
+    int64_t read_;  // next seqnum to read
+    int64_t final_;  // final seqnum (including FIN)
 
     // physical buffer state
     int64_t nxtPos;
@@ -71,6 +73,7 @@ public:
 public:
     int64_t getNxt();
     int64_t getWnd();
+    RecvStreamState getState();
 
 public:
     void init(int64_t _irs);
@@ -83,7 +86,7 @@ public:
 private:
     void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
     void readFromBuffer(int64_t pos, uint8_t *dest, int64_t n);
-    void attemptAck();
+    void sendAck();
 };
 
 struct RecvSegment {
