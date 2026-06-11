@@ -151,6 +151,7 @@ int64_t Engine::open(const std::string srcIp,
         );
     });
 
+    // wake up - verify in established state
     if (conn->state != State::ESTABLISHED) {
         if (conn->state == State::CLOSED) {
             // already torn down - do nothing
@@ -166,25 +167,64 @@ int64_t Engine::open(const std::string srcIp,
     return cId;
 }
 
-void Engine::read(int64_t cId, int n, std::vector<uint8_t> &buffer) {
+int64_t Engine::read(int64_t cId, int n, uint8_t *outBuffer) {
     auto it = openConnections.find(cId);
     if (it == openConnections.end()) {
         Log(ERROR, std::format("couldn't find connection: {}", cId));
-        return;
+        return -1;
     }
     Connection* conn = it->second;
+
+    int64_t bytesAvail = conn->recvStream.readyToReadBytes();
+    if (bytesAvail >= n) {
+        int64_t bytesRead = conn->recvStream.read(n, outBuffer);
+        if (bytesRead != n) {
+            Log(ERROR, std::format("bytes read ({}) != bytes requested ({}), despite sufficient bytes ready ({})", bytesRead, n, bytesAvail));
+            return -1;
+        }
+        return n;
+    }
+
+    // sleep until sufficient data is ready
+    std::unique_lock<std::mutex> ul(conn->pendingReadMutex);
+    conn->pendingReadCv.wait(ul, [&] { return conn->recvStream.readyToReadBytes() >= n; });
+
+    //
+    // TODO - wake up, process ready data
+    //
+
+    return 0;
 }
 
-void Engine::write(int64_t cId, int n, std::vector<uint8_t> &buffer) {
+int64_t Engine::write(int64_t cId, int n, uint8_t *inBuffer) {
     auto it = openConnections.find(cId);
     if (it == openConnections.end()) {
         Log(ERROR, std::format("couldn't find connection: {}", cId));
-        return;
+        return -1;
     }
     Connection* conn = it->second;
+
+    int64_t freeSpaceAvail = conn->sendStream.freeSpaceBytes();
+    if (freeSpaceAvail >= n) {
+        int64_t bytesWritten = conn->sendStream.write(n, inBuffer);
+        if (bytesWritten != n) {
+            Log(ERROR, std::format("bytes written ({}) != bytes requested ({}), despite sufficient free space ({})", bytesWritten, n, freeSpaceAvail));
+            return -1;
+        }
+        return n;
+    }
+    
+    // insufficient space - return 0, and user can decide when to try again later
+    return 0;
 }
 
 void Engine::close(int64_t cId) {
+    auto it = openConnections.find(cId);
+    if (it == openConnections.end()) {
+        Log(ERROR, std::format("couldn't find connection: {}", cId));
+        return;
+    }
+    Connection* conn = it->second;
 
 }
 
@@ -411,12 +451,14 @@ bool Engine::cancelRto(Connection *conn, struct event *event) {
 
 Header Engine::makeBaseHeader(Connection *conn) {
     if (!verifyConn(conn)) return;
+
     Header hdr{};
     hdr.srcPort = conn->srcPort;
     hdr.destPort = conn->destPort;
     hdr.seqNum = conn->sendStream.getNxt();
     hdr.ackNum = conn->recvStream.getNxt();
     hdr.window = conn->recvStream.getWnd();
+
     return hdr;
 }
 
@@ -591,8 +633,6 @@ int Engine::createUdpSocket(const std::string& srcIp,
 
     return fd;
 }
-
-
 
 bool Engine::verifyReceivedHeader(Connection *conn, const Header &hdr) {
     if (!(hdr.srcPort == conn->destPort && hdr.destPort == conn->srcPort)) {

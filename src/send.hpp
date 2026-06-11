@@ -89,7 +89,6 @@ public:
 public:
     int64_t getIss();
     int64_t getNxt();
-    int64_t getWnd();
     SendStreamState getState();
     void setRwnd(int64_t _rwnd);
 
@@ -98,9 +97,12 @@ public:
     void init();
 
     int64_t sendNextSegment(SendSegment &seg);
-    void write(int64_t n, uint8_t *inBuffer);
+    int64_t write(int64_t n, uint8_t *inBuffer);
     bool onAck(int64_t ackNum);
     bool onRto();
+
+    int64_t readyToSendBytes();
+    int64_t freeSpaceBytes();
 
 private:
     void sendReadySegments();
@@ -111,9 +113,6 @@ private:
 
     void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
     void readFromBuffer(int64_t pos, uint8_t *dest, int64_t n);
-
-    int64_t readyToSendBytes();
-    int64_t freeSpaceBytes();
 
     int64_t generateIss();
 };

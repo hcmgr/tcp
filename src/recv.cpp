@@ -35,23 +35,19 @@ void RecvStream::init(int64_t _irs) {
     state = RecvStreamState::INITIALISED;
 }
 
-void RecvStream::read(int64_t n, uint8_t *outBuffer) {
+int64_t RecvStream::read(int64_t n, uint8_t *outBuffer) {
     int64_t bytesAvail = readyToReadBytes();
     if (bytesAvail < n) {
-        //
-        // Insufficient data to read.
-        //
-        // TODO - put to sleep, wake on available data
-        //
-        Log(INFO, std::format("insufficient data for read() - {} bytes avail, {} bytes to read - sleep until sufficient data available", bytesAvail, n));
-        return;
+        // insufficient data to read
+        Log(INFO, std::format("insufficient data for read() - {} bytes avail, {} bytes to read", bytesAvail, n));
+        return 0;
     }
 
     readFromBuffer(readPos, outBuffer, n);
     read_ += n;
     readPos = (readPos + n) % capacity;
 
-    return;
+    return n;
 }
 
 void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {

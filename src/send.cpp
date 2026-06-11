@@ -73,16 +73,16 @@ void SendStream::init() {
     init(DEFAULT_INIT_RWND);
 }
 
-void SendStream::write(int64_t n, uint8_t *inBuffer) {
+int64_t SendStream::write(int64_t n, uint8_t *inBuffer) {
     if (state != SendStreamState::INITIALISED) {
         Log(ERROR, "send stream not initialised");
-        return;
+        return -1;
     }
 
     int64_t currFreeSpace = freeSpaceBytes();
     if (currFreeSpace < n) {
         Log(ERROR, std::format("insufficient free space for write() - {} free bytes, {} bytes to write", currFreeSpace, n));
-        return;
+        return 0;
     }
 
     // write new data
@@ -91,6 +91,8 @@ void SendStream::write(int64_t n, uint8_t *inBuffer) {
 
     // new data available - send ready segments
     sendReadySegments();
+
+    return n;
 }
 
 bool SendStream::onAck(int64_t ackNum) {

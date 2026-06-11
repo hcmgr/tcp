@@ -74,16 +74,16 @@ public:
 
 public:
     void init(int64_t _irs);
-    void read(int64_t n, uint8_t *outBuffer);
+    int64_t read(int64_t n, uint8_t *outBuffer);
     void receiveSegment(RecvSegment &hdr, uint8_t *payloadPtr);
+
+    int64_t readyToReadBytes();
+    int64_t freeSpaceBytes();
 
 private:
     void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
     void readFromBuffer(int64_t pos, uint8_t *dest, int64_t n);
-
     void attemptAck();
-    int64_t readyToReadBytes();
-    int64_t freeSpaceBytes();
 };
 
 struct RecvSegment {

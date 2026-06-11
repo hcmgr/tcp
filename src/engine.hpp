@@ -94,8 +94,8 @@ public:
                   const std::string destIp,
                   int destPort,
                   ConnType connType);
-    void read(int64_t cId, int n, std::vector<uint8_t> &buffer);
-    void write(int64_t cId, int n, std::vector<uint8_t> &buffer);
+    int64_t read(int64_t cId, int n, uint8_t *outBuffer);
+    int64_t write(int64_t cId, int n, uint8_t *inBuffer);
     void close(int64_t cId);
 
 public:
