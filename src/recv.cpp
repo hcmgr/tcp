@@ -8,7 +8,7 @@ RecvStream::RecvStream(Connection *conn)
 
 RecvStream::~RecvStream() {
     free(buffer);
-    receivedSegments.clear();
+    pendingSegments.clear();
     state = RecvStreamState::CLOSED;
 }
 
@@ -24,15 +24,13 @@ void RecvStream::init(int64_t _irs) {
     }
 
     irs = _irs;
-    nxt = irs + 1; // have consumed irs byte => next byte we expect is irs + 1
-    read_ = irs + 1;
+    nxt = irs + 1; // consumed IRS from SYN already
+    read_ = irs + 1; // consumed IRS from SYN already
 
-    // physical positions are 1:1 with the logical seqnums. the peer's SYN (irs) wastes a byte at
-    // position 0, so the first data byte (irs + 1) maps to position 1.
-    readPos = (read_ - irs) % capacity;
-    nxtPos = (nxt - irs) % capacity;
+    readPos = 0;
+    nxtPos = 0;
 
-    cumSegmentSize = 0;
+    cumPendingSegmentsSize = 0;
 
     state = RecvStreamState::INITIALISED;
 }
@@ -51,56 +49,53 @@ void RecvStream::read(int64_t n, uint8_t *outBuffer) {
 
     readFromBuffer(readPos, outBuffer, n);
     read_ += n;
-    readPos = (read_ - irs) % capacity;
+    readPos = (readPos + n) % capacity;
+
     return;
 }
 
-void RecvStream::receiveSegment(Header &hdr, int64_t payloadSize, uint8_t *payloadPtr) {
-    // seqnum span = payload bytes, plus 1 wasted byte per SYN/FIN
-    int64_t size = payloadSize;
-    if (hdr.SYN || hdr.FIN) {
-        size += 1;
-    }
-    if (size == 0) {
-        // consumes no sequence space - nothing to receive
+void RecvStream::receiveSegment(RecvSegment &seg, uint8_t *payloadPtr) {
+    //
+    // ensure within range: [nxt, nxt + wnd)
+    //
+    if (seg.hdr.seqNum < nxt) {
+        Log(ERROR, std::format("dropping already-received segment (seqNum {} < nxt {}): {}", seg.hdr.seqNum, nxt));
         return;
     }
-
-    //
-    // received segments only valid in seqnum range: [nxt, read)
-    //
-    int64_t segL = hdr.seqNum;
-    int64_t segR = hdr.seqNum + size - 1; // inclusive
-    if (segL < nxt || read_ <= segR){
-        Log(ERROR, std::format("out of range"));
+    int64_t wndEnd = nxt + freeSpaceBytes(); // first seqnum past the receive window
+    if (seg.hdr.seqNum + seg.size - 1 >= wndEnd) {
+        Log(ERROR, std::format("received segment outside window - seqNum + size - 1 ({}) >= wndEnd ({})", seg.hdr.seqNum + seg.size - 1, wndEnd));
         return;
     }
-
-    RecvSegment seg;
-    seg.seqNum = hdr.seqNum;
-    seg.size = size;
-
-    // payload buffer position - data sits after any SYN byte (positions are 1:1 with seqnums)
-    int64_t payloadSeqNum = hdr.seqNum;
-    if (hdr.SYN || hdr.FIN) {
-        payloadSeqNum += 1;
-    }
-    int64_t payloadPos = (payloadSeqNum - irs) % capacity;
 
     //
     // place segment at correct location in our 'receivedSegments' deque (can be out-of-order)
     //
+
+    int64_t segL = seg.hdr.seqNum;
+    int64_t segR = seg.hdr.seqNum + seg.size - 1; // inclusive
+    if (seg.hdr.SYN) {
+        segR += 1;
+    } else if (seg.hdr.FIN) {
+        segR += 1;
+    }
+
     bool placed = false;
-    auto it = receivedSegments.begin();
-    while (it != receivedSegments.end()) {
+    auto it = pendingSegments.begin();
+    while (it != pendingSegments.end()) {
         RecvSegment &curr = *it;
-        int64_t currL = curr.seqNum;
-        int64_t currR = curr.seqNum + curr.size - 1; // inclusive
+        int64_t currL = curr.hdr.seqNum;
+        int64_t currR = curr.hdr.seqNum + curr.size - 1; // inclusive
+        if (curr.hdr.FIN) {
+            currR += 1;
+        }
+
         if (segR <= currL) {
             // seg somewhere before curr - place it
-            receivedSegments.insert(it, seg);
-            cumSegmentSize += seg.size;
-            writeToBuffer(payloadPos, payloadPtr, payloadSize);
+            pendingSegments.insert(it, seg);
+            cumPendingSegmentsSize += seg.size;
+            int64_t pos = (nxtPos + (seg.hdr.seqNum - nxt)) % capacity;
+            writeToBuffer(pos, payloadPtr, seg.size);
             placed = true;
             break;
         } else if (currR < segL) {
@@ -109,34 +104,36 @@ void RecvStream::receiveSegment(Header &hdr, int64_t payloadSize, uint8_t *paylo
             continue;
         } else {
             // invalid
-            Log(ERROR, std::format("invalid range of new segment: seqNum={}, size={}", seg.seqNum, seg.size));
+            Log(ERROR, std::format("invalid range of new segment: {}", seg.toString()));
             return;
         }
     }
     if (!placed) {
-        // not placed yet - place at end
-        receivedSegments.push_back(seg);
-        cumSegmentSize += seg.size;
-        writeToBuffer(payloadPos, payloadPtr, payloadSize);
+        // not placed yet - must be at end
+        pendingSegments.push_back(seg);
+        cumPendingSegmentsSize += seg.size;
+        int64_t pos = (nxtPos + (seg.hdr.seqNum - nxt)) % capacity;
+        writeToBuffer(pos, payloadPtr, seg.size);
     }
 
     //
     // advance nxt as far as segments are contiguous
     //
-    while (!receivedSegments.empty()) {
-        RecvSegment &curr = receivedSegments.front();
-        if (nxt == curr.seqNum) {
+    while (!pendingSegments.empty()) {
+        RecvSegment &curr = pendingSegments.front();
+        if (nxt == curr.hdr.seqNum) {
             nxt += curr.size;
-            nxtPos = (nxt - irs) % capacity;
-            cumSegmentSize -= curr.size;
-            receivedSegments.pop_front();
+            if (curr.hdr.SYN) {
+                nxt += 1;
+            } else if (curr.hdr.FIN) {
+                nxt += 1;
+            }
+            nxtPos = (nxtPos + curr.size) % capacity;
+            cumPendingSegmentsSize -= curr.size;
+            pendingSegments.pop_front();
         } else {
             break;
         }
-    }
-
-    if (!bufferStateValid()) {
-        return;
     }
 }
 
@@ -156,45 +153,22 @@ void RecvStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
     }
 }
 
-//
-// For now:
-//      - send acks immediately on receipt of new data
-// Later, implement delayed acks
-//      - queue ack for X ms, waiting to piggyback it onto a sending segment (or another ack)
-//
 void RecvStream::attemptAck() {
+    //
+    // For now, send acks immediately on receipt of new data
+    // Later, implement delayed acks:
+    //      - queue ack for X ms, waiting to piggyback it onto a sending segment (or another ack)
+    //
     Engine::getInstance().sendAck(connRef);
 }
 
-//
-// 'Ready-to-read' space is in front of readPos before nxtPos.
-//
 int64_t RecvStream::readyToReadBytes() {
     return ((nxtPos + capacity) - readPos) % capacity;
 }
 
-//
-// Occupied buffer = contiguous-unread (readPos -> nxtPos) + out-of-order payload bytes already
-// placed ahead of nxtPos (cumSegmentSize). Reserve one byte so a full buffer is distinguishable
-// from an empty one.
-//
 int64_t RecvStream::freeSpaceBytes() {
-    int64_t contiguousUnread = ((nxtPos + capacity) - readPos) % capacity;
-    return capacity - 1 - contiguousUnread - cumSegmentSize;
-}
+    int64_t ready = readyToReadBytes();
 
-bool RecvStream::bufferStateValid() {
-    if (nxtPos != (nxt - irs) % capacity) {
-        Log(ERROR, std::format("nxtPos ({}) is incorrect buffer position of nxt ({})", nxtPos, nxt));
-        return false;
-    }
-    if (readPos != (read_ - irs) % capacity) {
-        Log(ERROR, std::format("readPos ({}) is incorrect buffer position of read ({})", readPos, read_));
-        return false;
-    }
-    if (!receivedSegments.empty() && receivedSegments.front().seqNum == nxt) {
-        Log(ERROR, std::format("front segment's seqNum should not be == nxt, nxt should have advanced to first non-contiguous segment"));
-        return false;
-    }
-    return true;
+    // reduce free-space by 1, so we can distinguish between empty and full
+    return capacity - 1 - ready - cumPendingSegmentsSize;
 }

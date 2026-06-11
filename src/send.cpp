@@ -56,10 +56,8 @@ void SendStream::init(int64_t initRwnd) {
 
     iss = generateIss();
     una = iss;
-    nxt = iss; // first byte to send should be the iss itself (i.e. on initial SYN/SYN-ACK)
-    write_ = iss;
+    nxt = iss; // first byte to send is ISS
 
-    // physical positions are 1:1 with the logical seqnums
     unaPos = 0;
     nxtPos = 0;
     writePos = 0;
@@ -91,8 +89,7 @@ void SendStream::write(int64_t n, uint8_t *inBuffer) {
 
     // write new data
     writeToBuffer(writePos, inBuffer, n);
-    write_ += n;
-    writePos = (write_ - iss) % capacity;
+    writePos = (writePos + n) % capacity;
 
     // new data available - send ready segments
     sendReadySegments();
@@ -116,26 +113,33 @@ bool SendStream::onAck(int64_t ackNum) {
     // advance una, removing inFlightSegments as necessary
     while (!inFlightSegments.empty()) {
         SendSegment &seg = inFlightSegments.front();
+        int64_t seqNumSize = seg.size;
+        if (seg.hdr.SYN) {
+            seqNumSize += 1;
+        } else if (seg.hdr.FIN) {
+            seqNumSize += 1;
+        }
 
-        if (seg.seqNum + seg.size <= ackNum) {
+        if (seg.hdr.seqNum + seqNumSize <= ackNum) {
             //
             // segment fully ack'd - remove segment
             //
-            una += seg.size;
-            unaPos = (una - iss) % capacity;
+            una += seqNumSize;
+            unaPos += seg.size;
 
             inFlightSegments.pop_front();
         }
-        else if (seg.seqNum < ackNum && ackNum < seg.seqNum + seg.size) {
+        else if (seg.hdr.seqNum < ackNum && ackNum < seg.hdr.seqNum + seqNumSize) {
             //
-            // segment partially ack'd - update segment
+            // segment partially ack'd - update segment (rarely happens, most acks will be full)
             //
-            int64_t ackedBytes = ackNum - seg.seqNum;
-            una += ackedBytes;
-            unaPos = (una - iss) % capacity;
+            int64_t ackedSeqNums = ackNum - seqNumSize;
+            int64_t ackedBytes = ackNum - seg.size;
 
-            seg.seqNum += ackedBytes;
-            seg.hdr.seqNum += ackedBytes;
+            una += ackedSeqNums;
+            unaPos = (unaPos + ackedBytes) % capacity;
+
+            seg.hdr.seqNum += ackedSeqNums;
             seg.size -= ackedBytes;
 
             break;
@@ -147,9 +151,6 @@ bool SendStream::onAck(int64_t ackNum) {
 
     if (una != ackNum) {
         Log(ERROR, std::format("after ACK, una ({}) and ackNum ({}) should be equal", una, ackNum));
-        return false;
-    }
-    if (!bufferStateValid()) {
         return false;
     }
 
@@ -181,17 +182,18 @@ bool SendStream::onRto() {
         return false;
     }
     SendSegment &rtoSeg = rto.seg;
-    SendSegment &earliestSeg = inFlightSegments.front();
-    if (!(earliestSeg.seqNum == rtoSeg.seqNum && earliestSeg.size == rtoSeg.size)) {
-        Log(ERROR, "RTO generated for non-front-of-queue segment");
-        return false;
+    SendSegment &oldestSeg = inFlightSegments.front();
+    if (!(oldestSeg.hdr.seqNum == una)) {
+        Log(ERROR, std::format("oldest segment seqNum ({}) != una ({}) - invalid", oldestSeg.hdr.seqNum, una));
+        return;
     }
-    if (!bufferStateValid()) {
+    if (!rtoSeg.equals(oldestSeg)) {
+        Log(ERROR, std::format("rto segment does not match oldest segment - oldest={}, rto={}", oldestSeg.toString(), rtoSeg.toString()));
         return false;
     }
 
-    // retransmit segment
-    int64_t bytesSent = retransmitSegment(rtoSeg);
+    // retransmit
+    int64_t bytesSent = retransmitOldestSegment(oldestSeg);
     if (bytesSent == -1) {
         return false;
     }
@@ -201,7 +203,7 @@ bool SendStream::onRto() {
     if (!res) {
         return false;
     }
-    res = queueRto(rtoSeg);
+    res = queueRto(oldestSeg);
     if (!res) {
         return false;
     }
@@ -221,7 +223,11 @@ void SendStream::sendReadySegments() {
         Header hdr = Engine::getInstance().makeBaseHeader(connRef);
         hdr.ACK = 1;
 
-        int64_t bytesSent = sendNextSegment(hdr, MSS);
+        SendSegment seg;
+        seg.hdr = hdr;
+        seg.size = MSS;
+
+        int64_t bytesSent = sendNextSegment(seg);
         if (bytesSent == -1) {
             return;
         }
@@ -236,29 +242,23 @@ void SendStream::sendReadySegments() {
     //
 }
 
-//
-// Send segment with header `hdr` and payload of `payloadSize` bytes taken from nxt onwards.
-//
-int64_t SendStream::sendNextSegment(Header &hdr, int64_t payloadSize) {
-    if (payloadSize > MSS) {
-        Log(ERROR, std::format("cannot send payload size > 1 MSS - {}", payloadSize));
+int64_t SendStream::sendNextSegment(SendSegment &seg) {
+    if (seg.hdr.seqNum != nxt) {
+        Log(ERROR, std::format("sendNextSegment invalid - seqNum {} != nxt, i.e. segment is not next segment", seg.hdr.seqNum, nxt));
+        return;
+    }
+    if (seg.size > MSS) {
+        Log(ERROR, std::format("cannot send payload size > 1 MSS - {}", seg.size));
         return -1;
     }
-    int bytesToSend = sizeof(hdr) + payloadSize;
-    if (getWnd() < bytesToSend) {
-        Log(INFO, std::format("no send attempt - wnd (cwnd={}, rwnd={}) < bytesToSend ({})", cwnd, rwnd, bytesToSend));
-        return -1;
-    }
+    int bytesToSend = sizeof(seg.hdr) + seg.size;
 
-    int64_t size = payloadSize;
-    if (hdr.SYN || hdr.FIN) {
-        size += 1;
-    }
+    // TODO - check congestion window
 
     // write header + payload to intermediate buffer
-    std::memcpy(preSendBuffer, &hdr, sizeof(hdr));
-    if (payloadSize > 0) {
-        readFromBuffer(nxtPos, preSendBuffer + sizeof(hdr), payloadSize);
+    std::memcpy(preSendBuffer, &seg.hdr, sizeof(seg.hdr));
+    if (seg.size > 0) {
+        readFromBuffer(nxtPos, preSendBuffer + sizeof(seg.hdr), seg.size);
     }
 
     // send segment
@@ -272,49 +272,39 @@ int64_t SendStream::sendNextSegment(Header &hdr, int64_t payloadSize) {
         return -1;
     }
 
-    nxt += size;
-    nxtPos = (nxt - iss) % capacity;
-    if (nxt > write_) {
-        // SYN/FIN add bytes the user never wrote - in this case, drag write_/writePos back up
-        write_ = nxt;
-        writePos = (write_ - iss) % capacity;
+    // advance nxt
+    nxt += seg.size;
+    if (seg.hdr.SYN) {
+        nxt += 1;
+    } else if (seg.hdr.FIN) {
+        nxt += 1;
     }
+    nxtPos = (nxtPos + seg.size) % capacity;
 
     // queue in-flight segment
-    SendSegment seg;
-    seg.hdr = hdr;
-    seg.seqNum = hdr.seqNum;
-    seg.size = size;
-
     inFlightSegments.push_back(seg);
 
-    // queue rto if: a) no active RTO, and b) segment consumes seqnums
-    if (!rto.active && size > 0) {
+    // queue rto if: no current rto, and segment consumes seqnum space
+    bool consumesSeqNum = seg.hdr.SYN || seg.hdr.FIN || seg.size > 0;
+    if (!rto.active && consumesSeqNum) {
         queueRto(seg);
     }
 
     return bytesSent;
 }
 
-int64_t SendStream::retransmitSegment(SendSegment &seg) {
-    if (getWnd() < MSS) {
-        Log(INFO, std::format("no send attempt - wnd < MSS (cwnd={}, rwnd={})", cwnd, rwnd));
+int64_t SendStream::retransmitOldestSegment(SendSegment &seg) {
+    if (seg.hdr.seqNum != una) {
+        Log(ERROR, std::format("retransmitSegment invalid - seqNum {} != una {}, i.e. segment is not oldest un-ack'd segment", seg.hdr.seqNum, una));
         return -1;
     }
 
-    // wire payload = seqnum span minus any wasted SYN/FIN byte
-    int64_t payloadSize = seg.size;
-    if (seg.hdr.SYN || seg.hdr.FIN) {
-        payloadSize -= 1;
-    }
-
     std::memcpy(preSendBuffer, &seg.hdr, sizeof(seg.hdr));
-    if (payloadSize > 0) {
-        // retransmit is always the oldest in-flight segment, whose payload starts at unaPos
-        readFromBuffer(unaPos, preSendBuffer + sizeof(seg.hdr), payloadSize);
+    if (seg.size > 0) {
+        readFromBuffer(unaPos, preSendBuffer + sizeof(seg.hdr), seg.size);
     }
 
-    int bytesToSend = sizeof(seg.hdr) + payloadSize;
+    int bytesToSend = sizeof(seg.hdr) + seg.size;
     int bytesSent = send(connRef->udpSocketFd, preSendBuffer, bytesToSend, 0);
     if (bytesSent == -1) {
         Log(ERROR, std::format("error on send() - {}", strerror(errno)));
@@ -373,11 +363,11 @@ void SendStream::readFromBuffer(int64_t pos, uint8_t *dest, int64_t n) {
 }
 
 int64_t SendStream::readyToSendBytes() {
-    return write_ - nxt;
+    return ((writePos + capacity) - nxtPos) % capacity;
 }
 
 int64_t SendStream::freeSpaceBytes() {
-    return capacity - 1 - (write_ - una); // reserve 1-byte, so a full buffer is distinguishable from empty
+    return 0;
 }
 
 int64_t SendStream::generateIss() {
@@ -385,24 +375,4 @@ int64_t SendStream::generateIss() {
     std::mt19937 generator(rd());
     std::uniform_int_distribution<int64_t> dist(0, MAX_ISS);
     return dist(generator);
-}
-
-bool SendStream::bufferStateValid() {
-    if (unaPos != (una - iss) % capacity) {
-        Log(ERROR, std::format("unaPos ({}) is incorrect buffer position of una ({})", unaPos, una));
-        return false;
-    }
-    if (nxtPos != (nxt - iss) % capacity) {
-        Log(ERROR, std::format("nxtPos ({}) is incorrect buffer position of nxt ({})", nxtPos, nxt));
-        return false;
-    }
-    if (writePos != (write_ - iss) % capacity) {
-        Log(ERROR, std::format("writePos ({}) is incorrect buffer position of write ({})", writePos, write_));
-        return false;
-    }
-    if (!inFlightSegments.empty() && inFlightSegments.front().seqNum != una) {
-        Log(ERROR, std::format("first in-flight segment seqNum ({}) != una ({})", inFlightSegments.front().seqNum, una));
-        return false;
-    }
-    return true;
 }

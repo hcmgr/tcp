@@ -60,4 +60,6 @@ struct __attribute__((packed)) Header
     void hostToNetworkOrder();
 
     std::string toString() const;
+
+    bool equals(const Header &other) const;
 };

@@ -315,12 +315,13 @@ void Engine::onRecvSegment(Connection *conn) {
             // handle payload itself
             //
             int payloadSize = bytesRead - sizeof(hdr);
-            if (payloadSize == 0) {
-                Log(INFO, "state=ESTABLISHED - empty payload - ignore");
-                return;
-            }
-            uint8_t *payload = conn->recvSegmentBuffer + sizeof(hdr);
-            conn->recvStream.receiveSegment(hdr, payloadSize, payload);
+            uint8_t *payloadPtr = conn->recvSegmentBuffer + sizeof(hdr);
+
+            RecvSegment seg;
+            seg.hdr = hdr;
+            seg.size = payloadSize;
+
+            conn->recvStream.receiveSegment(seg, payloadPtr);
         } break;
 
         case State::FIN_WAIT_1: {
@@ -402,7 +403,11 @@ bool Engine::sendHandshakeSyn(Connection *conn) {
     hdr.SYN = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }
@@ -418,7 +423,11 @@ bool Engine::sendHandshakeSynAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }
@@ -433,7 +442,11 @@ bool Engine::sendHandshakeAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }
@@ -448,7 +461,11 @@ bool Engine::sendAck(Connection *conn) {
     hdr.ACK = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }
@@ -465,7 +482,11 @@ bool Engine::sendRst(Connection *conn) {
     hdr.RST = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }
@@ -481,7 +502,11 @@ bool Engine::sendFin(Connection *conn) {
     hdr.FIN = 1;
     hdr.setChecksum();
 
-    int64_t sent = conn->sendStream.sendNextSegment(hdr, 0);
+    SendSegment seg;
+    seg.hdr = hdr;
+    seg.size = 0;
+
+    int64_t sent = conn->sendStream.sendNextSegment(seg);
     if (sent == -1) {
         return false;
     }

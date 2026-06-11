@@ -57,9 +57,8 @@ private:
     int64_t iss;    // initial send seqnum
     int64_t una;    // first sent and un-ack'd seqnum
     int64_t nxt;    // next seqnum to send
-    int64_t write_; // next seqnum to write
 
-    // physical buffer state - 1:1 with the logical seqnums: pos == (seq - iss) % capacity
+    // physical buffer state
     int64_t unaPos;
     int64_t nxtPos;
     int64_t writePos;
@@ -93,14 +92,14 @@ public:
     void init(int64_t initRwnd);
     void init();
 
-    int64_t sendNextSegment(Header &hdr, int64_t payloadSize);
+    int64_t sendNextSegment(SendSegment &seg);
     void write(int64_t n, uint8_t *inBuffer);
     bool onAck(int64_t ackNum);
     bool onRto();
 
 private:
     void sendReadySegments();
-    int64_t retransmitSegment(SendSegment &seg);
+    int64_t retransmitOldestSegment(SendSegment &seg);
 
     bool queueRto(SendSegment &seg);
     bool cancelRto();
@@ -110,14 +109,19 @@ private:
 
     int64_t readyToSendBytes();
     int64_t freeSpaceBytes();
+
     int64_t generateIss();
-    bool bufferStateValid();
 };
 
 struct SendSegment {
     Header hdr;
-    int64_t seqNum;
-    int64_t size; // payload + SYN/FIN 1-byte contribution
+    int64_t size;
+
+    bool equals(const SendSegment &other) const {
+        return hdr.equals(other.hdr) && size == other.size;
+    }
+
+    std::string toString() const;
 };
 
 struct Rto {

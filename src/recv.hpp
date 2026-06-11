@@ -56,8 +56,8 @@ private:
     int64_t nxtPos;
     int64_t readPos;
 
-    std::deque<RecvSegment> receivedSegments;
-    int64_t cumSegmentSize; // cumulative size of `receivedSegments` queue
+    std::deque<RecvSegment> pendingSegments;
+    int64_t cumPendingSegmentsSize;
 
     RecvStreamState state;
 
@@ -75,7 +75,7 @@ public:
 public:
     void init(int64_t _irs);
     void read(int64_t n, uint8_t *outBuffer);
-    void receiveSegment(Header &hdr, int64_t payloadSize, uint8_t *payloadPtr);
+    void receiveSegment(RecvSegment &hdr, uint8_t *payloadPtr);
 
 private:
     void writeToBuffer(int64_t pos, uint8_t *src, int64_t n);
@@ -84,10 +84,11 @@ private:
     void attemptAck();
     int64_t readyToReadBytes();
     int64_t freeSpaceBytes();
-    bool bufferStateValid();
 };
 
 struct RecvSegment {
-    int64_t seqNum;
-    int64_t size; // payload + SYN/FIN 1-byte contribution
+    Header hdr;
+    int64_t size;
+
+    std::string toString() const;
 };
