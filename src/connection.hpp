@@ -51,18 +51,41 @@ public:
     ~connection();
 
 public:
+    //
+    // User-facing open/read/write/close API.
+    //
     int64_t open();
-
     int64_t read(uint64_t n, uint8_t *dest_buffer);
-
     int64_t write(uint64_t n, uint8_t *src_buffer);
-
     int64_t close();
 
 public:
-    void on_recv_segment();
+    //
+    // Callback from event loop on recv segment (i.e. bytes ready-to-read on udp socket).
+    // Advance tcp state machine, hand off non-zero payload to recv_stream.
+    //
+    void recv_segment();
+
+    //
+    // Send segment to peer with given seqnum, flags, and optionally a payload.
+    // Called by: 
+    //      a) send_stream, to send payload segments, or 
+    //      b) connection itself, to send header-only segments
+    //
+    int64_t send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
+
+private:
+    // header-only sends
+    // note: 'fin' piggybacks last segment, so we don't send it header-only
+    void send_syn();
+    void send_syn_ack();
+    void send_ack();
+    void send_rst();
 
 private:
     void reset();
     void destroy();
+
+private:
+    tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 };

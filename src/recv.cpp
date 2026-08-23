@@ -118,7 +118,7 @@ int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
 
 void recv_stream::on_syn(uint64_t irs) {
     if (state_ != state::SYN_WAITING) {
-        Log(level::ERROR, "on_syn() not in SYN_WAITING state - dropping");
+        Log(level::ERROR, "on_syn_recv() not in SYN_WAITING state - dropping");
         return;
     }
     irs_ = irs;
@@ -128,7 +128,7 @@ void recv_stream::on_syn(uint64_t irs) {
 
 void recv_stream::on_fin(uint64_t fin) {
     if (state_ != state::ESTABLISHED) {
-        Log(level::ERROR, "on_fin() not in ESTABLISHED state - dropping");
+        Log(level::ERROR, "on_fin_recv() not in ESTABLISHED state - dropping");
         return;
     }
     fin_ = fin;

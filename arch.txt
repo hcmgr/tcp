@@ -1,0 +1,4 @@
+- explanation of the implementation
+- explanation of the tcp state machine and event processing
+- i.e. this is basically the single-source-of-truth documentation for both our implementation
+  and tcp in general

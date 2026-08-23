@@ -23,7 +23,7 @@ namespace net {
                           uint16_t dst_port) 
     {
         // create socket
-        int fd = socket(AF_INET, SOCK_DGRAM, 17);
+        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 17);
         if (fd == -1) {
             perror("socket");
             Log(level::ERROR, std::format("socket() - {}", strerror(errno)));
@@ -72,13 +72,18 @@ namespace net {
                 sum += hdr_words[i];
             }
 
-            const uint16_t *payload_words = reinterpret_cast<const uint16_t*>(payload);
-            uint64_t i = 0;
-            for (; i + 1 < payload_size; i += 2) {
-                sum += payload_words[i / 2];
-            }
-            if (i < payload_size) {
-                sum += payload[i];
+            if (payload_size > 0) {
+                if (!payload) {
+                    throw std::runtime_error("null payload ptr with non-zero payload_size");
+                }
+                const uint16_t *payload_words = reinterpret_cast<const uint16_t*>(payload);
+                uint64_t i = 0;
+                for (; i + 1 < payload_size; i += 2) {
+                    sum += payload_words[i / 2];
+                }
+                if (i < payload_size) {
+                    sum += payload[i];
+                }
             }
 
             while (sum >> 16) {

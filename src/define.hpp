@@ -52,4 +52,8 @@ struct __attribute__((packed)) tcp_header {
     bool syn() { return flags & syn_mask; }
     bool rst() { return flags & rst_mask; }
     bool ack() { return flags & ack_mask; }
+
+    std::string to_string() const {
+        return "";
+    }
 };

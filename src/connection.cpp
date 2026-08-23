@@ -43,7 +43,7 @@ connection::~connection() {
 int64_t connection::open() {
     if (state_ == tcp_state::CLOSED) {
         // send our iss (handshake syn)
-        send_stream_->send_syn();
+        send_syn();
         state_ = tcp_state::SYN_SENT;
     }
     else if (state_ == tcp_state::LISTEN) {
@@ -145,7 +145,7 @@ int64_t connection::close() {
     return 0;
 }
 
-void connection::on_recv_segment() 
+void connection::recv_segment() 
 {
     uint32_t max_datagram_size = MSS + sizeof(tcp_header);
     uint8_t segment[max_datagram_size];
@@ -188,7 +188,7 @@ void connection::on_recv_segment()
             if (hdr.syn() && !hdr.ack()) {
                 // syn received => send syn-ack
                 recv_stream_->on_syn(hdr.seqnum);   // accept peer's iss
-                send_stream_->send_syn_ack();       // send our iss + ack peer iss (handshake syn-ack)
+                send_syn_ack();                     // send our iss + ack peer iss (handshake syn-ack)
 
                 state_ = tcp_state::SYN_RECEIVED;
             }
@@ -207,8 +207,8 @@ void connection::on_recv_segment()
             if (hdr.syn() && hdr.ack()) {
                 // syn-ack received => send ack
                 recv_stream_->on_syn(hdr.seqnum);   // accept peer's iss
-                send_stream_->on_ack(hdr.acknum);   // accept peer's ack of our iss
-                send_stream_->send_ack();           // ack peer's iss (handshake ack)
+                send_stream_->on_ack_recv(hdr.acknum);   // accept peer's ack of our iss
+                send_ack();                              // ack peer's iss (handshake ack)
 
                 state_ = tcp_state::ESTABLISHED;
             } 
@@ -242,7 +242,7 @@ void connection::on_recv_segment()
             }
 
             if (hdr.ack()) {
-                send_stream_->on_ack(hdr.acknum);
+                send_stream_->on_ack_recv(hdr.acknum);
             }
 
             recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_size);
@@ -284,9 +284,76 @@ void connection::on_recv_segment()
     }
 }
 
+tcp_header connection::make_header(uint32_t seqnum, 
+                                   uint16_t flags,
+                                   uint8_t *payload_ptr,
+                                   uint64_t payload_len)
+{
+    tcp_header hdr;
+
+    hdr.src_port = src_port_;
+    hdr.dest_port = dest_port_;
+    hdr.seqnum = seqnum;
+    hdr.acknum = recv_stream_->nxt();
+    hdr.flags = flags;
+    hdr.window = recv_stream_->free_space_bytes();
+    hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
+
+    return hdr;
+}
+
+int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+    tcp_header hdr = make_header(seqnum, flags, payload_ptr, payload_len);
+
+    uint32_t to_send_bytes = sizeof(tcp_header) + payload_len;
+    uint8_t buf[to_send_bytes];
+
+    std::memcpy(buf, &hdr, sizeof(tcp_header));
+    if (payload_len > 0) {
+        std::memcpy(buf + sizeof(tcp_header), payload_ptr, payload_len);
+    }
+
+    // non-blocking udp send - should succeed immediately
+    int64_t sent_bytes = send(udp_socket_fd_, buf, to_send_bytes, 0);
+    if (sent_bytes < 0) {
+        Log(level::ERROR, std::format("error on send() - {}, segment - {}", strerror(errno), hdr.to_string()));
+        return -1;
+    }
+    if (sent_bytes != to_send_bytes) {
+        Log(level::ERROR, std::format("sent_bytes ({}) != to_send_bytes ({}) - ", sent_bytes, to_send_bytes));
+        return -1;
+    }
+
+    return sent_bytes;
+}
+
+void connection::send_syn() {
+    uint64_t seqnum = send_stream_->nxt();
+    uint16_t flags = syn_mask;
+    send_segment(seqnum, flags, nullptr, 0);
+}
+
+void connection::send_syn_ack() {
+    uint64_t seqnum = send_stream_->nxt();
+    uint16_t flags = syn_mask | ack_mask;
+    send_segment(seqnum, flags, nullptr, 0);
+}
+
+void connection::send_ack() {
+    uint64_t seqnum = send_stream_->nxt();
+    uint16_t flags = ack_mask;
+    send_segment(seqnum, flags, nullptr, 0);
+}
+
+void connection::send_rst() {
+    uint64_t seqnum = 0;
+    uint16_t flags = rst_mask;
+    send_segment(seqnum, flags, nullptr, 0);
+}
+
 void connection::reset() {
     // send rst
-    send_stream_->send_rst();
+    send_rst();
 
     // teardown own connection immediately
     destroy();

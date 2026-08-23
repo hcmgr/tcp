@@ -20,24 +20,18 @@ send_stream::~send_stream() {
 
 }
 
-void send_stream::send_syn() {
+int64_t send_stream::on_syn_sent() {
+    nxt_ += 1;
 
-}
+    if (!(una_ == iss_  && nxt_ == iss_ + 1)) {
+        Log(level::ERROR, 
+            std::format(
+                "bad send state reached after on_syn_sent: should have una == iss and nxt == iss + 1 - {}", 
+                to_string()));
+        return -1;
+    }
 
-void send_stream::send_syn_ack() {
-
-}
-
-void send_stream::send_ack() {
-
-}
-
-void send_stream::send_fin() {
-
-}
-
-void send_stream::send_rst() {
-
+    return 0;
 }
 
 int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
@@ -58,7 +52,7 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
     return n;
 }
 
-int64_t send_stream::on_ack(uint64_t acknum) {
+int64_t send_stream::on_ack_recv(uint64_t acknum) {
     if (acknum < una_) {
         // old ack - ignore
         return 0;
@@ -102,8 +96,38 @@ uint64_t send_stream::free_space_bytes() {
 }
 
 void send_stream::send_ready_bytes() {
-    // package up ready bytes into segments
+    auto conn = conn_ref.lock();
+    if (!conn) {
+        return;
+    }
 
+    //
+    // Send all 1-MSS segments we have avail + remainder.
+    //
+    // For now, send remainder immediately.
+    // In future:
+    //      If sent (full segments already sent), send immediately.
+    //      Otherwise (< 1-MSS avail), queue a delayed send.
+    //
+    uint64_t ready = 0;
+    while ((ready = ready_bytes()) > 0) {
+        uint32_t seqnum = nxt_;
+        uint16_t flags = ack_mask;
+
+        uint64_t len = ready >= MSS ? MSS : ready;
+        uint8_t buf[len];
+        buffer_->read(nxt_pos_, buf, len);
+
+        int64_t sent_bytes = conn->send_segment(seqnum, flags, buf, len);
+        if (sent_bytes != MSS) {
+            // send_stream will be torndown by owning connection for bad send()
+            return;
+        }
+
+        // advance nxt
+        nxt_ += len;
+        inc(nxt_pos_, len);
+    }
 }
 
 void send_stream::retransmit_oldest_segment() {

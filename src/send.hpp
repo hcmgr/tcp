@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include <memory>
 
 #include "buffer.hpp"
 #include "define.hpp"
@@ -34,56 +35,57 @@ private:
 
     congestion_controller *cong_;
 
-    // delayed-ack state
-    struct delayed_ack {
-
-    };
-
-    // delayed-send state
-    struct delayed_send {
-
-    };
-
-    // rto state
-    struct rto {
-
-    };
+    std::weak_ptr<connection> conn_ref;
 
     // triple-dup-ack state
     struct triple_dup_ack {
         uint64_t last_acks[2];
     };
-    
+
+    // rto state
+    struct rto {
+        bool active;
+        struct event *ev;
+    };
+
+    // delayed-ack state
+    struct delayed_ack {
+        bool active;
+        struct event *ev;
+    };
 
 public:
     send_stream(uint64_t capacity);
     ~send_stream();
 
 public:
-    // header-only sends
-    void send_syn();
-    void send_syn_ack();
-    void send_ack();
-    void send_fin();
-    void send_rst();
+    // handshake syn sent by connection
+    int64_t on_syn_sent();
 
     // user write new bytes to send
     int64_t write(uint64_t n, uint8_t *src_buffer);
 
     // peer ack'd our stream
-    int64_t on_ack(uint64_t acknum);
+    int64_t on_ack_recv(uint64_t acknum);
 
+public:
     uint64_t ready_bytes();
     uint64_t free_space_bytes();
+    uint64_t nxt() { return nxt_; }
+    std::string to_string() { return ""; }
 
 private:
-    // on new data avail (write or on_ack) or congestion event (rto or triple dup ack)
+    //
+    // Send ready bytes (nxt onwards) on new data avail, i.e. on:
+    //      a) user write, or;
+    //      b) ack recv
+    //
     void send_ready_bytes();
 
-    // on congestion event (rto or triple dup ack)
+    // triggered by a congestion event (rto or triple dup ack)
     void retransmit_oldest_segment();
 
-    // congestion events
+    // congestion event handlers
     void on_rto();
     void on_triple_dup_ack();
 
