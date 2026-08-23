@@ -46,8 +46,8 @@ public:
     int64_t read(uint64_t n, uint8_t *dest_buffer);
 
     // on peer's syn/fin
-    void on_syn(uint64_t irs);
-    void on_fin(uint64_t fin);
+    void on_syn_recv(uint64_t irs);
+    void on_fin_recv(uint64_t fin);
 
 public:
     int64_t ready_bytes();

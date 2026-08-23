@@ -1,7 +1,7 @@
 #include "send.hpp"
 #include "utils.hpp"
 
-send_stream::send_stream(uint64_t capacity) {
+send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
@@ -14,6 +14,8 @@ send_stream::send_stream(uint64_t capacity) {
     buffer_ = new ring_buffer(capacity);
 
     cong_ = new congestion_controller();
+
+    send_segment_cb_ = send_segment_cb;
 }
 
 send_stream::~send_stream() {
@@ -96,11 +98,6 @@ uint64_t send_stream::free_space_bytes() {
 }
 
 void send_stream::send_ready_bytes() {
-    auto conn = conn_ref.lock();
-    if (!conn) {
-        return;
-    }
-
     //
     // Send all 1-MSS segments we have avail + remainder.
     //
@@ -118,7 +115,7 @@ void send_stream::send_ready_bytes() {
         uint8_t buf[len];
         buffer_->read(nxt_pos_, buf, len);
 
-        int64_t sent_bytes = conn->send_segment(seqnum, flags, buf, len);
+        int64_t sent_bytes = send_segment_cb_(seqnum, flags, buf, len);
         if (sent_bytes != MSS) {
             // send_stream will be torndown by owning connection for bad send()
             return;
@@ -139,5 +136,13 @@ void send_stream::on_rto() {
 }
 
 void send_stream::on_triple_dup_ack() {
+
+}
+
+void send_stream::on_delayed_ack_timeout() {
+
+}
+
+void send_stream::on_delayed_send_timeout() {
 
 }

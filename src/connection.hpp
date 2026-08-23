@@ -61,7 +61,7 @@ public:
 
 public:
     //
-    // Callback from event loop on recv segment (i.e. bytes ready-to-read on udp socket).
+    // Callback from event loop on receipt of segment (i.e. bytes ready-to-read on udp socket).
     // Advance tcp state machine, hand off non-zero payload to recv_stream.
     //
     void recv_segment();

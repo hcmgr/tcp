@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
-#include <memory>
+#include <functional>
 
 #include "buffer.hpp"
 #include "define.hpp"
@@ -35,17 +35,19 @@ private:
 
     congestion_controller *cong_;
 
-    std::weak_ptr<connection> conn_ref;
-
-    // triple-dup-ack state
-    struct triple_dup_ack {
-        uint64_t last_acks[2];
-    };
+    // callback to perform the wire segment send
+    using send_segment_cb = std::function<int64_t(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len)>;
+    send_segment_cb send_segment_cb_;
 
     // rto state
     struct rto {
         bool active;
         struct event *ev;
+    };
+
+    // triple-dup-ack state
+    struct triple_dup_ack {
+        uint64_t last_acks[2];
     };
 
     // delayed-ack state
@@ -55,7 +57,7 @@ private:
     };
 
 public:
-    send_stream(uint64_t capacity);
+    send_stream(uint64_t capacity, send_segment_cb send_segment_cb);
     ~send_stream();
 
 public:
@@ -85,9 +87,13 @@ private:
     // triggered by a congestion event (rto or triple dup ack)
     void retransmit_oldest_segment();
 
-    // congestion event handlers
+    // congestion events
     void on_rto();
     void on_triple_dup_ack();
+
+    // nagle timeouts
+    void on_delayed_ack_timeout();
+    void on_delayed_send_timeout();
 
 private:
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }

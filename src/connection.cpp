@@ -22,7 +22,10 @@ connection::connection(const std::string &src_ip,
         return;
     }
 
-    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY);
+    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY,
+        [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+            return send_segment(seqnum, flags, payload_ptr, payload_len);
+        });
     recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
 
     if (ct == conn_type::CONNECT) {
@@ -187,7 +190,7 @@ void connection::recv_segment()
 
             if (hdr.syn() && !hdr.ack()) {
                 // syn received => send syn-ack
-                recv_stream_->on_syn(hdr.seqnum);   // accept peer's iss
+                recv_stream_->on_syn_recv(hdr.seqnum);   // accept peer's iss
                 send_syn_ack();                     // send our iss + ack peer iss (handshake syn-ack)
 
                 state_ = tcp_state::SYN_RECEIVED;
@@ -206,7 +209,7 @@ void connection::recv_segment()
 
             if (hdr.syn() && hdr.ack()) {
                 // syn-ack received => send ack
-                recv_stream_->on_syn(hdr.seqnum);   // accept peer's iss
+                recv_stream_->on_syn_recv(hdr.seqnum);   // accept peer's iss
                 send_stream_->on_ack_recv(hdr.acknum);   // accept peer's ack of our iss
                 send_ack();                              // ack peer's iss (handshake ack)
 
@@ -248,7 +251,7 @@ void connection::recv_segment()
             recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_size);
 
             if (hdr.fin()) {
-                recv_stream_->on_fin(hdr.seqnum + payload_size);
+                recv_stream_->on_fin_recv(hdr.seqnum + payload_size);
             }
         } 
         break;

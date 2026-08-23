@@ -22,7 +22,7 @@ TEST(RecvStreamTest, SynContiguousSegmentsThenFin) {
     recv_stream rs(TEST_CAPACITY);
 
     uint64_t irs = 100;
-    rs.on_syn(irs);
+    rs.on_syn_recv(irs);
 
     std::string a = "hello";
     std::string b = "world";
@@ -42,7 +42,7 @@ TEST(RecvStreamTest, SynContiguousSegmentsThenFin) {
     EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
 
     uint64_t fin = seq_c + c.size();
-    rs.on_fin(fin);
+    rs.on_fin_recv(fin);
 
     // stream is torn down - further segments are dropped
     std::string late = "late";
@@ -56,7 +56,7 @@ TEST(RecvStreamTest, SynOutOfOrderSegmentsThenFin) {
     recv_stream rs(TEST_CAPACITY);
 
     uint64_t irs = 0;
-    rs.on_syn(irs);
+    rs.on_syn_recv(irs);
 
     std::string a = "AAAA";
     std::string b = "BBBB";
@@ -82,7 +82,7 @@ TEST(RecvStreamTest, SynOutOfOrderSegmentsThenFin) {
     EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
 
     uint64_t fin = seq_c + c.size();
-    rs.on_fin(fin);
+    rs.on_fin_recv(fin);
     std::string late = "x";
     EXPECT_EQ(rs.recv_segment(fin, (uint8_t*)late.data(), late.size()), -1);
 }
@@ -94,7 +94,7 @@ TEST(RecvStreamTest, DuplicateAndOverlappingSegmentsAreTrimmed) {
     recv_stream rs(TEST_CAPACITY);
 
     uint64_t irs = 0;
-    rs.on_syn(irs);
+    rs.on_syn_recv(irs);
 
     std::string a = "0123456789";
     uint64_t seq_a = irs + 1;
@@ -119,7 +119,7 @@ TEST(RecvStreamTest, BufferWrapsAroundAcrossMultipleCycles) {
     recv_stream rs(TEST_CAPACITY);
 
     uint64_t irs = 0;
-    rs.on_syn(irs);
+    rs.on_syn_recv(irs);
 
     uint64_t seq = irs + 1;
     for (int i = 0; i < 10; i++) {
@@ -146,11 +146,11 @@ TEST(RecvStreamTest, StateGuardsRejectCallsOutsideEstablished) {
     EXPECT_EQ(rs.recv_segment(0, (uint8_t*)early.data(), early.size()), -1);
 
     // on_fin() before on_syn() - dropped, does not disturb SYN_WAITING
-    rs.on_fin(123);
+    rs.on_fin_recv(123);
 
     // on_syn() should still succeed since the bogus on_fin() above had no effect
     uint64_t irs = 5;
-    rs.on_syn(irs);
+    rs.on_syn_recv(irs);
 
     std::string data = "ok";
     uint64_t seq = irs + 1;
@@ -158,7 +158,7 @@ TEST(RecvStreamTest, StateGuardsRejectCallsOutsideEstablished) {
     EXPECT_EQ(read_n(rs, data.size()), data);
 
     uint64_t fin = seq + data.size();
-    rs.on_fin(fin);
+    rs.on_fin_recv(fin);
 
     // recv_segment() after on_fin() - FINISHED state drops further segments
     std::string late = "late";
