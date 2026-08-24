@@ -116,23 +116,27 @@ int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
     return n;
 }
 
-void recv_stream::on_syn_recv(uint64_t irs) {
+int64_t recv_stream::on_syn_recv(uint64_t irs) {
     if (state_ != state::SYN_WAITING) {
         Log(level::ERROR, "on_syn_recv() not in SYN_WAITING state - dropping");
-        return;
+        return -1;
     }
     irs_ = irs;
     nxt_ = irs_ + 1;
     state_ = state::ESTABLISHED;
+
+    return 0;
 }
 
-void recv_stream::on_fin_recv(uint64_t fin) {
+int64_t recv_stream::on_fin_recv(uint64_t fin) {
     if (state_ != state::ESTABLISHED) {
         Log(level::ERROR, "on_fin_recv() not in ESTABLISHED state - dropping");
-        return;
+        return -1;
     }
     fin_ = fin;
     state_ = state::FINISHED;
+
+    return 0;
 }
 
 int64_t recv_stream::free_space_bytes() {

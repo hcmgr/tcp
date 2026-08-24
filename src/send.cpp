@@ -1,7 +1,7 @@
 #include "send.hpp"
 #include "utils.hpp"
 
-send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
+send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb, struct event_base *eb) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
@@ -16,6 +16,8 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     cong_ = new congestion_controller();
 
     send_segment_cb_ = send_segment_cb;
+
+    event_base_ = eb;
 }
 
 send_stream::~send_stream() {
@@ -51,6 +53,13 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
     }
 
     buffer_->write(wr_pos_, src_buffer, n);
+
+    // write made new data available => try send ready bytes
+    auto res = send_ready_bytes();
+    if (res < 0) {
+        return -1;
+    }
+
     return n;
 }
 
@@ -60,6 +69,40 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         return 0;
     }
 
+    // todo - protect against ridiculously large acknum
+
+    //
+    // check for triple-dup-ack
+    //
+    auto &last_acks = dup_ack_.last_acks;
+    if (last_acks[0] == last_acks[1] && last_acks[1] == acknum) {
+        if (acknum > una_) {
+            //
+            // Fatal case.
+            //
+            // If new acknum equal to last 2 acks, acknum has to == una.
+            // Otherwise, the previous acks would have just advanced una already.
+            //
+            // Fail here, and owning connection should trigger teardown.
+            //
+            Log(level::ERROR, std::format("triple dup-ack detected, yet acknum ({}) != una ({}) - teardown", acknum, una_));
+            return -1;
+        }
+
+        // triple-dup-ack detected - fast retransmit oldest segment
+        auto res = retransmit_oldest_segment();
+        if (res < 0) {
+            return -1;
+        }
+    } 
+    else {
+        std::swap(last_acks[0], last_acks[1]);
+        last_acks[1] = acknum;
+    }
+
+    //
+    // advance una, popping segments of our in-flight-queue as necessary
+    //
     while (!in_flight_segments_.empty()) {
         segment &seg = in_flight_segments_.front();
         if (acknum < seg.seqnum) {
@@ -79,10 +122,14 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         }
     }
 
-    // TODO - protect against ridiculous number being sent that messses with our una_pos_
-
     una_ = acknum;
     una_pos_ = inc(una_pos_, acknum - una_);
+    
+    // ack potentially made new data avail => try send ready bytes
+    auto res = send_ready_bytes();
+    if (res < 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -97,10 +144,9 @@ uint64_t send_stream::free_space_bytes() {
     return ((una_pos_ + capacity) - wr_pos_) % capacity;
 }
 
-void send_stream::send_ready_bytes() {
+int64_t send_stream::send_ready_bytes() {
     //
     // Send all 1-MSS segments we have avail + remainder.
-    //
     // For now, send remainder immediately.
     // In future:
     //      If sent (full segments already sent), send immediately.
@@ -110,35 +156,46 @@ void send_stream::send_ready_bytes() {
     while ((ready = ready_bytes()) > 0) {
         uint32_t seqnum = nxt_;
         uint16_t flags = ack_mask;
-
         uint64_t len = ready >= MSS ? MSS : ready;
         uint8_t buf[len];
         buffer_->read(nxt_pos_, buf, len);
 
         int64_t sent_bytes = send_segment_cb_(seqnum, flags, buf, len);
         if (sent_bytes != MSS) {
-            // send_stream will be torndown by owning connection for bad send()
-            return;
+            return -1;
         }
 
         // advance nxt
         nxt_ += len;
         inc(nxt_pos_, len);
     }
+
+    return 0;
 }
 
-void send_stream::retransmit_oldest_segment() {
+int64_t send_stream::retransmit_oldest_segment() {
+    if (in_flight_segments_.empty()) {
+        Log(level::ERROR, "retransmit_oldest_segment() invoked with empty in-flight-segments queue");
+        return -1;
+    }
 
+    segment &seg = in_flight_segments_.front();
+    uint32_t seqnum = seg.seqnum;
+    uint16_t flags = ack_mask;
+    uint64_t len = seg.payload_size;
+    uint8_t buf[len];
+    buffer_->read(nxt_pos_, buf, len);
+
+    int64_t sent_bytes = send_segment_cb_(seqnum, flags, buf, len);
+    if (sent_bytes != len) {
+        return -1;
+    }
+    return sent_bytes;
 }
 
 void send_stream::on_rto() {
 
 }
-
-void send_stream::on_triple_dup_ack() {
-
-}
-
 void send_stream::on_delayed_ack_timeout() {
 
 }

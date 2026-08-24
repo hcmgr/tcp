@@ -46,14 +46,14 @@ public:
     int64_t read(uint64_t n, uint8_t *dest_buffer);
 
     // on peer's syn/fin
-    void on_syn_recv(uint64_t irs);
-    void on_fin_recv(uint64_t fin);
+    int64_t on_syn_recv(uint64_t irs);
+    int64_t on_fin_recv(uint64_t fin);
 
 public:
     int64_t ready_bytes();
     int64_t free_space_bytes();
     uint64_t nxt() { return nxt_; }
-    std::string to_string();
+    std::string to_string() {}
 
 private:
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }

@@ -3,6 +3,8 @@
 #include <deque>
 #include <functional>
 
+#include <event2/event.h>
+
 #include "buffer.hpp"
 #include "define.hpp"
 #include "cong.hpp"
@@ -24,6 +26,9 @@ private:
     // physical buffer
     ring_buffer *buffer_;
 
+    // event_base of our worker/event loop - passed down by connection
+    struct event_base *event_base_;
+
     struct segment {
         uint64_t seqnum;
         uint64_t payload_size;
@@ -39,25 +44,36 @@ private:
     using send_segment_cb = std::function<int64_t(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len)>;
     send_segment_cb send_segment_cb_;
 
-    // rto state
     struct rto {
         bool active;
         struct event *ev;
-    };
 
-    // triple-dup-ack state
-    struct triple_dup_ack {
+        rto() : active(false), ev(nullptr) {}
+    };
+    rto rto_;
+
+    // dup-ack state
+    struct dup_ack {
+        // last 2 valid acks received (to detect triple-dup-ack).
+        // 'valid ack' implies una <= acknum, otherwise we just drop it.
         uint64_t last_acks[2];
-    };
 
-    // delayed-ack state
+        dup_ack() { last_acks[0] = 0; last_acks[1] = 0; }
+    };
+    dup_ack dup_ack_;
+
+    // delayed ack state
     struct delayed_ack {
         bool active;
         struct event *ev;
+
+        delayed_ack() : active(false), ev(nullptr) {}
     };
+    delayed_ack delayed_ack_;
 
 public:
-    send_stream(uint64_t capacity, send_segment_cb send_segment_cb);
+
+    send_stream(uint64_t capacity, send_segment_cb send_segment_cb, struct event_base *eb);
     ~send_stream();
 
 public:
@@ -82,16 +98,12 @@ private:
     //      a) user write, or;
     //      b) ack recv
     //
-    void send_ready_bytes();
+    int64_t send_ready_bytes();
 
     // triggered by a congestion event (rto or triple dup ack)
-    void retransmit_oldest_segment();
+    int64_t retransmit_oldest_segment();
 
-    // congestion events
     void on_rto();
-    void on_triple_dup_ack();
-
-    // nagle timeouts
     void on_delayed_ack_timeout();
     void on_delayed_send_timeout();
 

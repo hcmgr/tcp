@@ -22,10 +22,10 @@ connection::connection(const std::string &src_ip,
         return;
     }
 
-    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY,
-        [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
-            return send_segment(seqnum, flags, payload_ptr, payload_len);
-        });
+    auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+        return send_segment(seqnum, flags, payload_ptr, payload_len);
+    };
+    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb, event_base_);
     recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
 
     if (ct == conn_type::CONNECT) {
@@ -152,8 +152,9 @@ void connection::recv_segment()
 {
     uint32_t max_datagram_size = MSS + sizeof(tcp_header);
     uint8_t segment[max_datagram_size];
-    int bytes_read = recv(udp_socket_fd_, segment, max_datagram_size, 0);
+    uint32_t bytes_read = recv(udp_socket_fd_, segment, max_datagram_size, 0);
     if (bytes_read == -1) {
+        Log(level::ERROR, std::format("recv() error - {}", strerror(errno)));
         return;
     }
 
@@ -165,126 +166,172 @@ void connection::recv_segment()
                      hdr.dest_port == src_port_ && 
                      net::tcp_checksum_valid(hdr, payload_ptr, payload_size);
     if (!hdr_valid) {
-        // drop
-        return;
+        Log(level::ERROR, std::format("tcp hdr invalid - tearing down - {}", hdr.to_string()));
+        goto fail;
     }
 
+    // regardless of the state, receiving rst makes us tear down
     if (hdr.rst()) {
-        // regardless of the state, receiving rst makes us tear down
-        reset();
-        return;
+        Log(level::INFO, "received rst - tearing down");
+        goto fail;
     }
 
+    //
+    // tcp state machine
+    //
     switch (state_) {
         case tcp_state::CLOSED: {
-            reset();
-            return;
-        } 
+            goto fail;
+        }
         break;
 
         case tcp_state::LISTEN: {
-            if (hdr.fin()) {
-                reset();
-                return;
-            }
-
+            if (hdr.fin())
+                goto fail;
+            
             if (hdr.syn() && !hdr.ack()) {
-                // syn received => send syn-ack
-                recv_stream_->on_syn_recv(hdr.seqnum);   // accept peer's iss
-                send_syn_ack();                     // send our iss + ack peer iss (handshake syn-ack)
+                //
+                // syn received
+                //
+
+                // accept peer's iss
+                auto res = recv_stream_->on_syn_recv(hdr.seqnum);
+                if (res < 0) {
+                    goto fail;
+                }
+
+                // send our iss + ack peer's iss (handshake syn-ack)
+                res = send_syn_ack();
+                if (res < 0) {
+                    goto fail;
+                }
 
                 state_ = tcp_state::SYN_RECEIVED;
             }
             else {
                 return;
             }
-        } 
+        }
         break;
 
         case tcp_state::SYN_SENT: {
             if (hdr.fin()) {
-                reset();
-                return;
+                goto fail;
             }
-
+            
             if (hdr.syn() && hdr.ack()) {
-                // syn-ack received => send ack
-                recv_stream_->on_syn_recv(hdr.seqnum);   // accept peer's iss
-                send_stream_->on_ack_recv(hdr.acknum);   // accept peer's ack of our iss
-                send_ack();                              // ack peer's iss (handshake ack)
+                //
+                // syn-ack received
+                //
+
+                // accept peer's iss
+                auto res = recv_stream_->on_syn_recv(hdr.seqnum);
+                if (res < 0) {
+                    goto fail;
+                }
+                
+
+                // accept peer's ack of our iss
+                res = send_stream_->on_ack_recv(hdr.acknum);
+                if (res < 0) {
+                    goto fail;
+                }
+
+                // ack peer's iss (handshake ack)
+                res = send_ack();
+                if (res < 0) {
+                    goto fail;
+                }
 
                 state_ = tcp_state::ESTABLISHED;
-            } 
+            }
             else {
                 return;
             }
-        } 
+        }
         break;
 
         case tcp_state::SYN_RECEIVED: {
             if (hdr.fin()) {
-                reset();
-                return;
+                goto fail;
             }
 
             if(!hdr.syn() && hdr.ack()) {
+                //
                 // ack received
+                //
                 state_ = tcp_state::ESTABLISHED;
-            } 
+            }
             else {
                 return;
             }
-        } 
+        }
         break;
 
         case tcp_state::ESTABLISHED: {
+            // syn invalid in ESTABLISHED state
             if (hdr.syn()) {
-                // syn invalid in ESTABLISHED state
-                reset();
-                return;
+                goto fail;
             }
 
+            // handle ack
             if (hdr.ack()) {
-                send_stream_->on_ack_recv(hdr.acknum);
+                auto res = send_stream_->on_ack_recv(hdr.acknum);
+                if (res < 0) {
+                    goto fail;
+                }
             }
 
-            recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_size);
+            // accept segment payload
+            auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_size);
+            if (res < 0) {
+                goto fail;
+            }
 
+            // handle fin
             if (hdr.fin()) {
-                recv_stream_->on_fin_recv(hdr.seqnum + payload_size);
+                res = recv_stream_->on_fin_recv(hdr.seqnum + payload_size);
+                if (res < 0) {
+                    goto fail;
+                }
             }
-        } 
+        }
         break;
 
         case tcp_state::FIN_WAIT_1: {
 
-        } 
+        }
         break;
 
         case tcp_state::CLOSE_WAIT: {
 
-        } 
+        }
         break;
 
         case tcp_state::FIN_WAIT_2: {
 
-        } 
+        }
         break;
 
         case tcp_state::TIME_WAIT: {
 
-        } 
+        }
         break;
 
         case tcp_state::LAST_ACK: {
 
-        } 
+        }
         break;
 
         default: {
             throw std::runtime_error("unknown tcp_state reached");
         }
     }
+    return;
+
+fail:
+    reset();
+    return;
 }
 
 tcp_header connection::make_header(uint32_t seqnum, 
@@ -330,28 +377,28 @@ int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *paylo
     return sent_bytes;
 }
 
-void connection::send_syn() {
+int64_t connection::send_syn() {
     uint64_t seqnum = send_stream_->nxt();
     uint16_t flags = syn_mask;
-    send_segment(seqnum, flags, nullptr, 0);
+    return send_segment(seqnum, flags, nullptr, 0);
 }
 
-void connection::send_syn_ack() {
+int64_t connection::send_syn_ack() {
     uint64_t seqnum = send_stream_->nxt();
     uint16_t flags = syn_mask | ack_mask;
-    send_segment(seqnum, flags, nullptr, 0);
+    return send_segment(seqnum, flags, nullptr, 0);
 }
 
-void connection::send_ack() {
+int64_t connection::send_ack() {
     uint64_t seqnum = send_stream_->nxt();
     uint16_t flags = ack_mask;
-    send_segment(seqnum, flags, nullptr, 0);
+    return send_segment(seqnum, flags, nullptr, 0);
 }
 
-void connection::send_rst() {
+int64_t connection::send_rst() {
     uint64_t seqnum = 0;
     uint16_t flags = rst_mask;
-    send_segment(seqnum, flags, nullptr, 0);
+    return send_segment(seqnum, flags, nullptr, 0);
 }
 
 void connection::reset() {
