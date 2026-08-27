@@ -1,39 +1,31 @@
 #include "connection.hpp"
 #include "event_loop.hpp"
+#include "manager.hpp"
 #include "utils.hpp"
 
-connection::connection(const std::string &src_ip,
-                       const std::string &dest_ip,
-                       uint32_t src_port,
-                       uint32_t dest_port,
-                       struct event_base *event_base,
-                       conn_type ct)
+connection::connection(const addr_tuple &addr_tuple, const conn_type &conn_type)
 {
-    src_ip_ = src_ip;
-    dest_ip_ = dest_ip;
-    src_port_ = src_port;
-    dest_port_ = dest_port;
+    addr_tuple_ = addr_tuple;
+    conn_type_ = conn_type;
 
-    event_base_ = event_base;
-
-    udp_socket_fd_ = net::create_udp_socket(src_ip, dest_ip, src_port, dest_port);
+    udp_socket_fd_ = net::create_udp_socket(addr_tuple_.src_ip_, addr_tuple_.dest_ip_, addr_tuple_.src_port_, addr_tuple_.dest_port_);
     if (udp_socket_fd_ == -1) {
-        reset();
+        destroy();
         return;
     }
 
     auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
         return send_segment(seqnum, flags, payload_ptr, payload_len);
     };
-    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb, event_base_);
+    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb);
     recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
 
-    if (ct == conn_type::CONNECT) {
-        state_ = tcp_state::CLOSED;
-    }
-    else if (ct == conn_type::LISTEN) {
-        state_ = tcp_state::LISTEN;
-    }
+    delayed_ack_timeout_ = new timeout_handler(
+        DELAYED_ACK_TIMEOUT_MS,
+        libevent_on_delayed_ack_timeout,
+        this);
+
+    state_ = tcp_state::CLOSED;
 }
 
 connection::~connection() {
@@ -44,21 +36,25 @@ connection::~connection() {
 }
 
 int64_t connection::open() {
-    if (state_ == tcp_state::CLOSED) {
-        // send our iss (handshake syn)
-        send_syn();
-        state_ = tcp_state::SYN_SENT;
-    }
-    else if (state_ == tcp_state::LISTEN) {
-        // do nothing
-    }
-    else {
+    if (state_ != tcp_state::CLOSED) {
         Log(level::ERROR, std::format("open() in bad state"));
         return -1;
     }
 
+    if (conn_type_ == conn_type::CONNECT) {
+        // send our iss (handshake syn)
+        send_syn();
+        state_ = tcp_state::SYN_SENT;
+    }
+    else if (conn_type_ == conn_type::LISTEN) {
+        // do nothing - wait for peer syn
+    }
+    else {
+        throw std::runtime_error("unknown conn_type");
+    }
+
     // add recv_segment event to event loop
-    struct event *recv_segment_ev = event_new(event_base_, 
+    struct event *recv_segment_ev = event_new(manager::get_instance().get_event_base(),
                                               udp_socket_fd_, 
                                               EV_READ|EV_PERSIST, 
                                               libevent_on_recv_segment, 
@@ -148,7 +144,50 @@ int64_t connection::close() {
     return 0;
 }
 
-void connection::recv_segment() 
+tcp_header connection::make_header(uint32_t seqnum, 
+                                   uint16_t flags,
+                                   uint8_t *payload_ptr,
+                                   uint64_t payload_len)
+{
+    tcp_header hdr;
+
+    hdr.src_port = addr_tuple_.src_port_;
+    hdr.dest_port = addr_tuple_.dest_port_;
+    hdr.seqnum = seqnum;
+    hdr.acknum = recv_stream_->nxt();
+    hdr.flags = flags;
+    hdr.window = recv_stream_->free_space_bytes();
+    hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
+
+    return hdr;
+}
+
+int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+    tcp_header hdr = make_header(seqnum, flags, payload_ptr, payload_len);
+
+    uint32_t to_send_bytes = sizeof(tcp_header) + payload_len;
+    uint8_t buf[to_send_bytes];
+
+    std::memcpy(buf, &hdr, sizeof(tcp_header));
+    if (payload_len > 0) {
+        std::memcpy(buf + sizeof(tcp_header), payload_ptr, payload_len);
+    }
+
+    // non-blocking udp send - should succeed immediately
+    int64_t sent_bytes = send(udp_socket_fd_, buf, to_send_bytes, 0);
+    if (sent_bytes < 0) {
+        Log(level::ERROR, std::format("error on send() - {}, segment - {}", strerror(errno), hdr.to_string()));
+        return -1;
+    }
+    if (sent_bytes != to_send_bytes) {
+        Log(level::ERROR, std::format("sent_bytes ({}) != to_send_bytes ({}) - ", sent_bytes, to_send_bytes));
+        return -1;
+    }
+
+    return sent_bytes;
+}
+
+void connection::on_recv_segment() 
 {
     uint32_t max_datagram_size = MSS + sizeof(tcp_header);
     uint8_t segment[max_datagram_size];
@@ -162,8 +201,8 @@ void connection::recv_segment()
     uint8_t *payload_ptr = segment + sizeof(hdr);
     uint64_t payload_size = bytes_read - sizeof(hdr);
 
-    bool hdr_valid = hdr.src_port == dest_port_ && 
-                     hdr.dest_port == src_port_ && 
+    bool hdr_valid = hdr.src_port == addr_tuple_.dest_port_ &&
+                     hdr.dest_port == addr_tuple_.src_port_ &&
                      net::tcp_checksum_valid(hdr, payload_ptr, payload_size);
     if (!hdr_valid) {
         Log(level::ERROR, std::format("tcp hdr invalid - tearing down - {}", hdr.to_string()));
@@ -288,6 +327,23 @@ void connection::recv_segment()
                 goto fail;
             }
 
+            // ack newly received bytes
+            if (delayed_ack_timeout_->active) {
+                // delayed-ack queued - cancel it, and just send this one
+                delayed_ack_timeout_->clear();
+                res = send_ack();
+                if (res < 0) {
+                    goto fail;
+                }
+            } 
+            else {
+                // no current delayed-ack - queue one
+                res = delayed_ack_timeout_->add();
+                if (res < 0) {
+                    goto fail;
+                }
+            }
+
             // handle fin
             if (hdr.fin()) {
                 res = recv_stream_->on_fin_recv(hdr.seqnum + payload_size);
@@ -334,47 +390,21 @@ fail:
     return;
 }
 
-tcp_header connection::make_header(uint32_t seqnum, 
-                                   uint16_t flags,
-                                   uint8_t *payload_ptr,
-                                   uint64_t payload_len)
-{
-    tcp_header hdr;
-
-    hdr.src_port = src_port_;
-    hdr.dest_port = dest_port_;
-    hdr.seqnum = seqnum;
-    hdr.acknum = recv_stream_->nxt();
-    hdr.flags = flags;
-    hdr.window = recv_stream_->free_space_bytes();
-    hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
-
-    return hdr;
-}
-
-int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
-    tcp_header hdr = make_header(seqnum, flags, payload_ptr, payload_len);
-
-    uint32_t to_send_bytes = sizeof(tcp_header) + payload_len;
-    uint8_t buf[to_send_bytes];
-
-    std::memcpy(buf, &hdr, sizeof(tcp_header));
-    if (payload_len > 0) {
-        std::memcpy(buf + sizeof(tcp_header), payload_ptr, payload_len);
+void connection::on_delayed_ack_timeout() {
+    if (!delayed_ack_timeout_->active) {
+        Log(level::ERROR, "delayed-ack-timeout triggered whilst its inactive");
+        reset();
+        return;
     }
 
-    // non-blocking udp send - should succeed immediately
-    int64_t sent_bytes = send(udp_socket_fd_, buf, to_send_bytes, 0);
-    if (sent_bytes < 0) {
-        Log(level::ERROR, std::format("error on send() - {}, segment - {}", strerror(errno), hdr.to_string()));
-        return -1;
-    }
-    if (sent_bytes != to_send_bytes) {
-        Log(level::ERROR, std::format("sent_bytes ({}) != to_send_bytes ({}) - ", sent_bytes, to_send_bytes));
-        return -1;
+    // send ack with whatever recv_stream's latest acknum is
+    auto res = send_ack();
+    if (res < 0) {
+        reset();
+        return;
     }
 
-    return sent_bytes;
+    delayed_ack_timeout_->clear();
 }
 
 int64_t connection::send_syn() {
@@ -415,7 +445,7 @@ void connection::destroy() {
     //
     
     //
-    // Notify owning connection_manager we're destroying connection, so it can
+    // Notify owning manager we're destroying connection, so it can
     // remove connection from the active list.
     //
 
@@ -443,9 +473,5 @@ void connection::destroy() {
     // delete recv_stream_;
     // recv_stream_ = nullptr;
 
-    // then, call: manager.on_destroy(id)
-    // manager will then erase unique_ptr from active list
-    // destroy() probably runs again from destructor, but its
-    // idempotent, so all good
-
+    state_ = tcp_state::DESTROYED;
 }

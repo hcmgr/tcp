@@ -1,7 +1,9 @@
 #include "send.hpp"
 #include "utils.hpp"
+#include "event_loop.hpp"
+#include "manager.hpp"
 
-send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb, struct event_base *eb) {
+send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
@@ -17,7 +19,10 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb, str
 
     send_segment_cb_ = send_segment_cb;
 
-    event_base_ = eb;
+    retransmission_timeout_ = new timeout_handler(
+        RTO_TIMEOUT_MS,
+        libevent_on_retransmission_timeout,
+        this);
 }
 
 send_stream::~send_stream() {
@@ -193,13 +198,6 @@ int64_t send_stream::retransmit_oldest_segment() {
     return sent_bytes;
 }
 
-void send_stream::on_rto() {
-
-}
-void send_stream::on_delayed_ack_timeout() {
-
-}
-
-void send_stream::on_delayed_send_timeout() {
+void send_stream::on_retransmission_timeout() {
 
 }

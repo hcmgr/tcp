@@ -8,6 +8,13 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
+struct addr_tuple {
+    std::string src_ip_;
+    std::string dest_ip_;
+    uint32_t src_port_;
+    uint32_t dest_port_;
+};
+
 enum class conn_type {
     CONNECT,
     LISTEN
@@ -15,21 +22,20 @@ enum class conn_type {
 
 class connection {
 private:
-    // 4-tuple, uniquely identifies connection - passed down by connection_manager
-    std::string src_ip_;
-    std::string dest_ip_;
-    uint32_t src_port_;
-    uint32_t dest_port_;
+    // monotonically increasing id given by manager
+    uint64_t id_;
 
-    // event_base of our worker/event loop - passed down by connection_manager
-    struct event_base *event_base_;
+    addr_tuple addr_tuple_;
+    conn_type conn_type_;
+
+    tcp_state state_;
 
     int udp_socket_fd_;
 
     send_stream *send_stream_;
     recv_stream *recv_stream_;
 
-    tcp_state state_;
+    timeout_handler *delayed_ack_timeout_;
 
     std::mutex pending_open_mtx_;
     std::condition_variable pending_open_cv_;
@@ -41,12 +47,8 @@ private:
     std::condition_variable pending_close_cv_;
 
 public:
-    connection(const std::string &src_ip,
-               const std::string &dest_ip,
-               uint32_t src_port,
-               uint32_t dest_port,
-               struct event_base *event_base,
-               conn_type ct);
+    connection(const addr_tuple &addr_tuple,
+               const conn_type &ct);
 
     ~connection();
 
@@ -61,12 +63,6 @@ public:
 
 public:
     //
-    // Callback from event loop on receipt of segment (i.e. bytes ready-to-read on udp socket).
-    // Advance tcp state machine, hand off non-zero payload to recv_stream.
-    //
-    void recv_segment();
-
-    //
     // Send segment to peer with given seqnum, flags, and optionally a payload.
     // Called by: 
     //      a) send_stream, to send payload segments, or 
@@ -74,18 +70,29 @@ public:
     //
     int64_t send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
+    //
+    // Callback from event loop on receipt of segment (i.e. bytes ready-to-read on udp socket).
+    // Advance tcp state machine, hand off non-zero payload to recv_stream.
+    //
+    void on_recv_segment();
+
+    //
+    // Callback from event loop on trigger of delayed-ack timeout
+    //
+    void on_delayed_ack_timeout();
+
+public:
+    tcp_state get_state() { return state_; }
+    void destroy();
+
 private:
+    void reset();
+    tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
+
     // header-only sends
     // note: 'fin' piggybacks last segment, so we don't send it header-only
     int64_t send_syn();
     int64_t send_syn_ack();
     int64_t send_ack();
     int64_t send_rst();
-
-private:
-    void reset();
-    void destroy();
-
-private:
-    tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 };

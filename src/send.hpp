@@ -10,6 +10,8 @@
 #include "cong.hpp"
 #include "buffer.hpp"
 
+struct timeout_handler;
+
 class send_stream {
 private:
     // logical seqnums
@@ -26,9 +28,6 @@ private:
     // physical buffer
     ring_buffer *buffer_;
 
-    // event_base of our worker/event loop - passed down by connection
-    struct event_base *event_base_;
-
     struct segment {
         uint64_t seqnum;
         uint64_t payload_size;
@@ -44,40 +43,23 @@ private:
     using send_segment_cb = std::function<int64_t(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len)>;
     send_segment_cb send_segment_cb_;
 
-    struct rto {
-        bool active;
-        struct event *ev;
-
-        rto() : active(false), ev(nullptr) {}
-    };
-    rto rto_;
-
-    // dup-ack state
     struct dup_ack {
         // last 2 valid acks received (to detect triple-dup-ack).
-        // 'valid ack' implies una <= acknum, otherwise we just drop it.
+        // 'valid' implies una <= acknum, otherwise we just drop it.
         uint64_t last_acks[2];
 
         dup_ack() { last_acks[0] = 0; last_acks[1] = 0; }
     };
     dup_ack dup_ack_;
 
-    // delayed ack state
-    struct delayed_ack {
-        bool active;
-        struct event *ev;
-
-        delayed_ack() : active(false), ev(nullptr) {}
-    };
-    delayed_ack delayed_ack_;
+    timeout_handler *retransmission_timeout_;
 
 public:
-
-    send_stream(uint64_t capacity, send_segment_cb send_segment_cb, struct event_base *eb);
+    send_stream(uint64_t capacity, send_segment_cb send_segment_cb);
     ~send_stream();
 
 public:
-    // handshake syn sent by connection
+    // handshake syn sent by connection (advance nxt)
     int64_t on_syn_sent();
 
     // user write new bytes to send
@@ -92,6 +74,9 @@ public:
     uint64_t nxt() { return nxt_; }
     std::string to_string() { return ""; }
 
+public:
+    void on_retransmission_timeout();
+
 private:
     //
     // Send ready bytes (nxt onwards) on new data avail, i.e. on:
@@ -102,10 +87,6 @@ private:
 
     // triggered by a congestion event (rto or triple dup ack)
     int64_t retransmit_oldest_segment();
-
-    void on_rto();
-    void on_delayed_ack_timeout();
-    void on_delayed_send_timeout();
 
 private:
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }

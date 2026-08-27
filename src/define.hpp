@@ -2,20 +2,22 @@
 #include <string>
 #include <cstdint>
 
-#define MSS                         1460
-
 // receive
 #define RECV_BUFFER_CAPACITY        65536
 #define DEFAULT_INIT_RWND           4096
 
 // send
 #define SEND_BUFFER_CAPACITY        65536
-#define RTO_TIMEOUT_MS              50 // ms
+#define RTO_TIMEOUT_MS              50
 #define MAX_ISS                     1 << 28
 
 // congestion
 #define INIT_CWND                   (MSS*10)
 #define SSTHRESH                    (MSS*20)
+
+// general
+#define MSS                         1460
+#define DELAYED_ACK_TIMEOUT_MS      40
 
 enum class tcp_state {
     CLOSED,                 // closed
@@ -28,6 +30,8 @@ enum class tcp_state {
     FIN_WAIT_2,             // sent first FIN, ACK'd by other
     TIME_WAIT,              // received second fin from peer, wait 2 MSL to close
     LAST_ACK,               // sent second fin, waiting on ACK
+
+    DESTROYED               // validly destroyed
 };
 
 constexpr uint16_t fin_mask = 1 << 0;
