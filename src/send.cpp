@@ -26,7 +26,9 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
 }
 
 send_stream::~send_stream() {
-
+    delete buffer_;
+    delete cong_;
+    delete retransmission_timeout_;
 }
 
 int64_t send_stream::on_syn_sent() {
@@ -99,10 +101,14 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         if (res < 0) {
             return -1;
         }
+
+        cong_->on_triple_dup_ack();
     } 
     else {
         std::swap(last_acks[0], last_acks[1]);
         last_acks[1] = acknum;
+
+        cong_->on_ack();
     }
 
     //
@@ -199,5 +205,5 @@ int64_t send_stream::retransmit_oldest_segment() {
 }
 
 void send_stream::on_retransmission_timeout() {
-
+    cong_->on_rto();
 }

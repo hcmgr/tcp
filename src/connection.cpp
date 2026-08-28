@@ -168,7 +168,7 @@ tcp_header connection::make_header(uint32_t seqnum,
     hdr.seqnum = seqnum;
     hdr.acknum = recv_stream_->nxt();
     hdr.flags = flags;
-    hdr.window = recv_stream_->free_space_bytes();
+    hdr.window = std::min(send_stream_->get_cwnd(), recv_stream_->free_space_bytes());
     hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
 
     return hdr;
@@ -420,19 +420,19 @@ void connection::on_delayed_ack_timeout() {
 }
 
 int64_t connection::send_syn() {
-    uint64_t seqnum = send_stream_->nxt();
+    uint64_t seqnum = send_stream_->get_nxt();
     uint16_t flags = syn_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }
 
 int64_t connection::send_syn_ack() {
-    uint64_t seqnum = send_stream_->nxt();
+    uint64_t seqnum = send_stream_->get_nxt();
     uint16_t flags = syn_mask | ack_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }
 
 int64_t connection::send_ack() {
-    uint64_t seqnum = send_stream_->nxt();
+    uint64_t seqnum = send_stream_->get_nxt();
     uint16_t flags = ack_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }

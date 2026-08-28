@@ -50,8 +50,8 @@ public:
     int64_t on_fin_recv(uint64_t fin);
 
 public:
-    int64_t ready_bytes();
-    int64_t free_space_bytes();
+    uint64_t ready_bytes();
+    uint64_t free_space_bytes();
     uint64_t nxt() { return nxt_; }
     std::string to_string() {}
 

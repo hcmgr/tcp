@@ -139,7 +139,7 @@ int64_t recv_stream::on_fin_recv(uint64_t fin) {
     return 0;
 }
 
-int64_t recv_stream::free_space_bytes() {
+uint64_t recv_stream::free_space_bytes() {
     // Bytes from furthest_pos -> rd_pos_, where furthest_pos is the 
     // buffer position of our furthest pending segment.
     //
@@ -173,7 +173,7 @@ int64_t recv_stream::free_space_bytes() {
     return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;
 }
 
-int64_t recv_stream::ready_bytes() {
+uint64_t recv_stream::ready_bytes() {
     uint64_t capacity = buffer_->capacity();
     return (((nxt_pos_ + capacity) - rd_pos_) % capacity);
 }

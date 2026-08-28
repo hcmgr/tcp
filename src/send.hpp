@@ -71,7 +71,9 @@ public:
 public:
     uint64_t ready_bytes();
     uint64_t free_space_bytes();
-    uint64_t nxt() { return nxt_; }
+
+    uint64_t get_cwnd() { return cong_->get_cwnd(); }
+    uint64_t get_nxt() { return nxt_; }
     std::string to_string() { return ""; }
 
 public:

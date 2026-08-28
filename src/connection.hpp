@@ -2,6 +2,7 @@
 #include <event2/event.h>
 #include <mutex>
 #include <condition_variable>
+#include <algorithm>
 
 #include "define.hpp"
 #include "send.hpp"
