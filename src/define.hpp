@@ -61,3 +61,8 @@ struct __attribute__((packed)) tcp_header {
         return "";
     }
 };
+
+enum class conn_type {
+    CONNECT,
+    LISTEN
+};

@@ -3,28 +3,14 @@
 #include "manager.hpp"
 #include "utils.hpp"
 
-connection::connection(const addr_tuple &addr_tuple, const conn_type &conn_type)
+connection::connection(uint64_t id, const addr_tuple &addr_tuple)
 {
+    //
+    // Constructor is intentionally thin - we don't want to initialise the 'heavy' state until 
+    // open() called (udp socket, recv_segment event, send/recv streams, etc).
+    //
+    id_ = id;
     addr_tuple_ = addr_tuple;
-    conn_type_ = conn_type;
-
-    udp_socket_fd_ = net::create_udp_socket(addr_tuple_.src_ip_, addr_tuple_.dest_ip_, addr_tuple_.src_port_, addr_tuple_.dest_port_);
-    if (udp_socket_fd_ == -1) {
-        destroy();
-        return;
-    }
-
-    auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
-        return send_segment(seqnum, flags, payload_ptr, payload_len);
-    };
-    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb);
-    recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
-
-    delayed_ack_timeout_ = new timeout_handler(
-        DELAYED_ACK_TIMEOUT_MS,
-        libevent_on_delayed_ack_timeout,
-        this);
-
     state_ = tcp_state::CLOSED;
 }
 
@@ -35,22 +21,17 @@ connection::~connection() {
     destroy();
 }
 
-int64_t connection::open() {
+int64_t connection::open(const conn_type &conn_type) {
     if (state_ != tcp_state::CLOSED) {
         Log(level::ERROR, std::format("open() in bad state"));
         return -1;
     }
 
-    if (conn_type_ == conn_type::CONNECT) {
-        // send our iss (handshake syn)
-        send_syn();
-        state_ = tcp_state::SYN_SENT;
-    }
-    else if (conn_type_ == conn_type::LISTEN) {
-        // do nothing - wait for peer syn
-    }
-    else {
-        throw std::runtime_error("unknown conn_type");
+    // create udp socket
+    udp_socket_fd_ = net::create_udp_socket(addr_tuple_.src_ip_, addr_tuple_.dest_ip_, addr_tuple_.src_port_, addr_tuple_.dest_port_);
+    if (udp_socket_fd_ == -1) {
+        destroy();
+        return -1;
     }
 
     // add recv_segment event to event loop
@@ -66,6 +47,37 @@ int64_t connection::open() {
     if (event_add(recv_segment_ev, NULL) < 0) {
         Log(level::ERROR, "failed to add recv_segment_ev event");
         return -1;
+    }
+
+    // create send and recv streams
+    auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+        return send_segment(seqnum, flags, payload_ptr, payload_len);
+    };
+    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb);
+    recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
+
+    // create delayed ack timeout handler
+    delayed_ack_timeout_ = new timeout_handler(
+        DELAYED_ACK_TIMEOUT_MS,
+        libevent_on_delayed_ack_timeout,
+        this);
+
+    // initialise connection as either connect or listen
+    switch (conn_type) {
+        case conn_type::CONNECT: {
+            // send our iss (handshake syn)
+            send_syn();
+            state_ = tcp_state::SYN_SENT;
+        } break;
+
+        case conn_type::LISTEN: {
+            // do nothing - wait for peer syn
+            state_ = tcp_state::LISTEN;
+        } break;
+
+        default: {
+            throw std::runtime_error("unknown conn_type");
+        }
     }
 
     // block until move out of handshake state

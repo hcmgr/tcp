@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "connection.hpp"
+#include "utils.hpp"
 
 //
 // Static singleton manager of our connections - exists for life of process.
@@ -37,17 +38,19 @@ public:
 
     struct event_base* get_event_base() { return event_base_; }
 
-    std::shared_ptr<connection> add_connection() {
-
-    }
-
-    void remove_connection(uint64_t id) {
-        auto it = active_connections_.find(id);
-        if (it == active_connections_.end()) {
-            return;
+    std::shared_ptr<connection> create_connection(const addr_tuple &addr_tuple) {
+        for (auto &p: active_connections_) {
+            if (p.second->get_addr_tuple() == addr_tuple) {
+                Log(level::ERROR, std::format("new_connection() failed - addr_tuple already in-use - {}", addr_tuple.to_string()));
+                return nullptr;
+            }
         }
-        it->second->destroy();
-        active_connections_.erase(it);
+
+        uint64_t id = connection_id_gen_++;
+        auto conn = std::make_shared<connection>(id, addr_tuple);
+        active_connections_[id] = conn;
+
+        return conn;
     }
 
 private:

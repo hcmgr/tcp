@@ -13,20 +13,22 @@ struct addr_tuple {
     std::string dest_ip_;
     uint32_t src_port_;
     uint32_t dest_port_;
-};
 
-enum class conn_type {
-    CONNECT,
-    LISTEN
+    bool operator==(const addr_tuple &other) const {
+        return src_ip_ == other.src_ip_ &&
+               dest_ip_ == other.dest_ip_ &&
+               src_port_ == other.src_port_ &&
+               dest_port_ == other.dest_port_;
+    }
+
+    std::string to_string() const;
 };
 
 class connection {
 private:
-    // monotonically increasing id given by manager
     uint64_t id_;
 
     addr_tuple addr_tuple_;
-    conn_type conn_type_;
 
     tcp_state state_;
 
@@ -47,8 +49,7 @@ private:
     std::condition_variable pending_close_cv_;
 
 public:
-    connection(const addr_tuple &addr_tuple,
-               const conn_type &ct);
+    connection(uint64_t id, const addr_tuple &addr_tuple);
 
     ~connection();
 
@@ -56,7 +57,7 @@ public:
     //
     // User-facing open/read/write/close API.
     //
-    int64_t open();
+    int64_t open(const conn_type &conn_type);
     int64_t read(uint64_t n, uint8_t *dest_buffer);
     int64_t write(uint64_t n, uint8_t *src_buffer);
     int64_t close();
@@ -82,7 +83,10 @@ public:
     void on_delayed_ack_timeout();
 
 public:
+    uint64_t get_id() { return id_; }
+    addr_tuple get_addr_tuple() { return addr_tuple_; }
     tcp_state get_state() { return state_; }
+
     void destroy();
 
 private:
