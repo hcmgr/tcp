@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 
 #include <event2/event.h>
 
@@ -26,7 +27,7 @@ private:
     uint64_t wr_pos_;
 
     // physical buffer
-    ring_buffer *buffer_;
+    std::unique_ptr<ring_buffer> buffer_;
 
     struct segment {
         uint64_t seqnum;
@@ -37,7 +38,7 @@ private:
     // un-ack'd / in-flight segments
     std::deque<segment> in_flight_segments_;
 
-    congestion_controller *cong_;
+    std::unique_ptr<congestion_controller> cong_;
 
     // callback to perform the wire segment send
     using send_segment_cb = std::function<int64_t(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len)>;
@@ -52,7 +53,7 @@ private:
     };
     dup_ack dup_ack_;
 
-    timeout_handler *retransmission_timeout_;
+    std::unique_ptr<timeout_handler> retransmission_timeout_;
 
 public:
     send_stream(uint64_t capacity, send_segment_cb send_segment_cb);

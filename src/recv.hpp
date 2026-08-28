@@ -1,4 +1,5 @@
 #include <deque>
+#include <memory>
 
 #include "buffer.hpp"
 #include "define.hpp"
@@ -16,7 +17,7 @@ private:
     uint64_t rd_pos_;
 
     // physical buffer
-    ring_buffer *buffer_;
+    std::unique_ptr<ring_buffer> buffer_;
 
     struct segment {
         uint64_t seqnum;

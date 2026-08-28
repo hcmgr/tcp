@@ -13,23 +13,19 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     nxt_pos_ = 0;
     wr_pos_ = 0;
 
-    buffer_ = new ring_buffer(capacity);
+    buffer_ = std::make_unique<ring_buffer>(capacity);
 
-    cong_ = new congestion_controller();
+    cong_ = std::make_unique<congestion_controller>();
 
     send_segment_cb_ = send_segment_cb;
 
-    retransmission_timeout_ = new timeout_handler(
+    retransmission_timeout_ = std::make_unique<timeout_handler>(
         RTO_TIMEOUT_MS,
         libevent_on_retransmission_timeout,
         this);
 }
 
-send_stream::~send_stream() {
-    delete buffer_;
-    delete cong_;
-    delete retransmission_timeout_;
-}
+send_stream::~send_stream() {}
 
 int64_t send_stream::on_syn_sent() {
     nxt_ += 1;

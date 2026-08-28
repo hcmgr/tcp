@@ -1,5 +1,6 @@
 #pragma once
 #include <event2/event.h>
+#include <memory>
 #include <mutex>
 #include <condition_variable>
 #include <algorithm>
@@ -35,10 +36,10 @@ private:
 
     int udp_socket_fd_;
 
-    send_stream *send_stream_;
-    recv_stream *recv_stream_;
+    std::unique_ptr<send_stream> send_stream_;
+    std::unique_ptr<recv_stream> recv_stream_;
 
-    timeout_handler *delayed_ack_timeout_;
+    std::unique_ptr<timeout_handler> delayed_ack_timeout_;
 
     std::mutex pending_open_mtx_;
     std::condition_variable pending_open_cv_;

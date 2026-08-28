@@ -53,11 +53,11 @@ int64_t connection::open(const conn_type &conn_type) {
     auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
         return send_segment(seqnum, flags, payload_ptr, payload_len);
     };
-    send_stream_ = new send_stream(SEND_BUFFER_CAPACITY, send_segment_cb);
-    recv_stream_ = new recv_stream(RECV_BUFFER_CAPACITY);
+    send_stream_ = std::make_unique<send_stream>(SEND_BUFFER_CAPACITY, send_segment_cb);
+    recv_stream_ = std::make_unique<recv_stream>(RECV_BUFFER_CAPACITY);
 
     // create delayed ack timeout handler
-    delayed_ack_timeout_ = new timeout_handler(
+    delayed_ack_timeout_ = std::make_unique<timeout_handler>(
         DELAYED_ACK_TIMEOUT_MS,
         libevent_on_delayed_ack_timeout,
         this);

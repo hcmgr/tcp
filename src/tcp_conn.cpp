@@ -8,7 +8,7 @@ tcp_conn::tcp_conn(std::shared_ptr<connection> conn)
 tcp_conn::~tcp_conn() {}
 
 std::shared_ptr<tcp_conn> tcp_conn::open(const conn_type &conn_type, const addr_tuple &addr_tuple) {
-    auto conn = manager::get_instance().new_connection(addr_tuple);
+    auto conn = manager::get_instance().create_connection(addr_tuple);
     if (conn == nullptr) {
         return nullptr;
     }

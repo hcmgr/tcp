@@ -12,7 +12,7 @@ recv_stream::recv_stream(uint64_t capacity) {
     nxt_pos_ = 0;
     rd_pos_ = 0;
 
-    buffer_ = new ring_buffer(capacity);
+    buffer_ = std::make_unique<ring_buffer>(capacity);
 
     state_ = state::SYN_WAITING;
 }
