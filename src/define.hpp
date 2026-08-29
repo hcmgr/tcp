@@ -34,6 +34,23 @@ enum class tcp_state {
     DESTROYED               // validly destroyed
 };
 
+inline std::string to_string(tcp_state state) {
+    switch (state) {
+        case tcp_state::CLOSED:       return "CLOSED";
+        case tcp_state::LISTEN:       return "LISTEN";
+        case tcp_state::SYN_SENT:     return "SYN_SENT";
+        case tcp_state::SYN_RECEIVED: return "SYN_RECEIVED";
+        case tcp_state::ESTABLISHED:  return "ESTABLISHED";
+        case tcp_state::FIN_WAIT_1:   return "FIN_WAIT_1";
+        case tcp_state::CLOSE_WAIT:   return "CLOSE_WAIT";
+        case tcp_state::FIN_WAIT_2:   return "FIN_WAIT_2";
+        case tcp_state::TIME_WAIT:    return "TIME_WAIT";
+        case tcp_state::LAST_ACK:     return "LAST_ACK";
+        case tcp_state::DESTROYED:    return "DESTROYED";
+    }
+    return "UNKNOWN";
+}
+
 constexpr uint16_t fin_mask = 1 << 0;
 constexpr uint16_t syn_mask = 1 << 1;
 constexpr uint16_t rst_mask = 1 << 2;

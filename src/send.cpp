@@ -141,6 +141,11 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     return 0;
 }
 
+uint64_t send_stream::in_flight_bytes() {
+    uint64_t capacity = buffer_->capacity();
+    return ((nxt_pos_ + capacity) - una_pos_) % capacity;
+}
+
 uint64_t send_stream::ready_bytes() {
     uint64_t capacity = buffer_->capacity();
     return ((wr_pos_ + capacity) - nxt_pos_) % capacity;
@@ -171,6 +176,8 @@ int64_t send_stream::send_ready_bytes() {
         if (sent_bytes != MSS) {
             return -1;
         }
+
+        in_flight_segments_.emplace_back(seqnum, len, nxt_pos_);
 
         // advance nxt
         nxt_ += len;

@@ -96,9 +96,9 @@ private:
     tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
     // header-only sends
-    // note: 'fin' piggybacks last segment, so we don't send it header-only
     int64_t send_syn();
     int64_t send_syn_ack();
     int64_t send_ack();
+    int64_t send_fin();
     int64_t send_rst();
 };

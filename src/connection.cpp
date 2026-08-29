@@ -90,15 +90,10 @@ int64_t connection::open(const conn_type &conn_type) {
         );
     });
 
-    // wake up
+    // wake up - teardown if haven't entered ESTABLISHED state
     if (state_ != tcp_state::ESTABLISHED) {
-        if (state_ == tcp_state::CLOSED) {
-            // already torndown - do nothing
-        }
-        else {
-            reset();
-            return -1;
-        }
+        reset();
+        return -1;
     }
 
     return 0;
@@ -109,6 +104,12 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
 
     if (dest_buffer == nullptr) {
         Log(level::ERROR, "read() dest_buffer ptr is null");
+        return -1;
+    }
+
+
+    if (state_ != tcp_state::ESTABLISHED) {
+        Log(level::ERROR, std::format("read() in non-ESTABLISHED state is invalid - {}", to_string(state_)));
         return -1;
     }
 
@@ -135,6 +136,11 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
 
     if (src_buffer == nullptr) {
         Log(level::ERROR, "write() dest_buffer ptr is null");
+        return -1;
+    }
+
+    if (state_ != tcp_state::ESTABLISHED) {
+        Log(level::ERROR, std::format("write() in non-ESTABLISHED state is invalid - {}", to_string(state_)));
         return -1;
     }
 
@@ -194,6 +200,11 @@ int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *paylo
     if (sent_bytes != to_send_bytes) {
         Log(level::ERROR, std::format("sent_bytes ({}) != to_send_bytes ({}) - ", sent_bytes, to_send_bytes));
         return -1;
+    }
+
+    // cancel current delayed-ack (if any) - implictly piggyback'd on this segment
+    if ((flags & ack_mask) && delayed_ack_timeout_->active) {
+        delayed_ack_timeout_->clear();
     }
 
     return sent_bytes;
@@ -434,6 +445,12 @@ int64_t connection::send_syn_ack() {
 int64_t connection::send_ack() {
     uint64_t seqnum = send_stream_->get_nxt();
     uint16_t flags = ack_mask;
+    return send_segment(seqnum, flags, nullptr, 0);
+}
+
+int64_t connection::send_fin() {
+    uint64_t seqnum = send_stream_->get_nxt();
+    uint16_t flags = fin_mask | ack_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }
 

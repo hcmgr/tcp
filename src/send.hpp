@@ -11,8 +11,6 @@
 #include "cong.hpp"
 #include "buffer.hpp"
 
-struct timeout_handler;
-
 class send_stream {
 private:
     // logical seqnums
@@ -63,6 +61,9 @@ public:
     // handshake syn sent by connection (advance nxt)
     int64_t on_syn_sent();
 
+    // handshake fin sent by connection (advance nxt)
+    int64_t on_fin_sent();
+
     // user write new bytes to send
     int64_t write(uint64_t n, uint8_t *src_buffer);
 
@@ -70,6 +71,7 @@ public:
     int64_t on_ack_recv(uint64_t acknum);
 
 public:
+    uint64_t in_flight_bytes();
     uint64_t ready_bytes();
     uint64_t free_space_bytes();
 
