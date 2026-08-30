@@ -21,7 +21,7 @@ private:
 
     struct segment {
         uint64_t seqnum;
-        uint64_t payload_size;
+        uint64_t payload_len;
         uint64_t payload_pos;   // position in physical buffer of first byte
     };
 

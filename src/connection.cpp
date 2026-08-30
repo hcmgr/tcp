@@ -144,12 +144,6 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
         return -1;
     }
 
-    int64_t free_space = send_stream_->get_num_free_space_bytes();
-    if (free_space < n) {
-        Log(level::ERROR, std::format("insufficient space for write() - free_space={} < n={}", free_space, n));
-        return -1;
-    }
-
     int64_t bytes_written = send_stream_->write(n, src_buffer);
     if (bytes_written < 0) {
         Log(level::ERROR, "write() error");
@@ -210,8 +204,6 @@ int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *paylo
     return sent_bytes;
 }
 
-
-
 void connection::on_recv_segment()
 {
     uint32_t max_datagram_size = MSS + sizeof(tcp_header);
@@ -239,6 +231,8 @@ void connection::on_recv_segment()
         Log(level::INFO, "received rst - tearing down");
         goto fail;
     }
+
+    send_stream_->set_peer_recv_window(hdr.window);
 
     //
     // tcp state machine
@@ -478,7 +472,7 @@ void connection::destroy() {
 }
 
 //
-// for our header-only sends:
+// for our special sends:
 //      syn/syn_ack/fin all consume a seqnum, and are thus routed through send_stream.
 //      ack/rst consume no seqnum, so we can send from connection immediately.
 //

@@ -52,7 +52,7 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
 
     segment seg;
     seg.seqnum = seqnum;
-    seg.payload_size = payload_size;
+    seg.payload_len = payload_size;
     seg.payload_pos = pos;
 
     //
@@ -67,10 +67,10 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
         it++;
     }
 
-    if (it != pending_segments_.end() && seg.seqnum + seg.payload_size >= it->seqnum) {
+    if (it != pending_segments_.end() && seg.seqnum + seg.payload_len >= it->seqnum) {
         // new segment overlaps with one in front - trim end so it fits contiguous (resting segment wins)
-        uint64_t overlap = (seg.seqnum + seg.payload_size) - it->seqnum;
-        seg.payload_size -= overlap;
+        uint64_t overlap = (seg.seqnum + seg.payload_len) - it->seqnum;
+        seg.payload_len -= overlap;
     }
     pending_segments_.insert(it, seg);
 
@@ -83,8 +83,8 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
             break;
         } 
         else if (nxt_ == it->seqnum) {
-            nxt_ += it->payload_size;
-            nxt_pos_ = inc(nxt_pos_, it->payload_size);
+            nxt_ += it->payload_len;
+            nxt_pos_ = inc(nxt_pos_, it->payload_len);
             pending_segments_.pop_front();
         } 
         else {
@@ -93,7 +93,7 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
         }
     }
 
-    return seg.payload_size;
+    return seg.payload_len;
 }
 
 int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
@@ -167,7 +167,7 @@ uint64_t recv_stream::free_space_bytes() {
     uint64_t furthest_pos = nxt_pos_;
     if (!pending_segments_.empty()) {
         const segment &back = pending_segments_.back();
-        furthest_pos = inc(furthest_pos, ((back.seqnum + back.payload_size) - nxt_));
+        furthest_pos = inc(furthest_pos, ((back.seqnum + back.payload_len) - nxt_));
     }
     uint64_t capacity = buffer_->capacity();
     return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;

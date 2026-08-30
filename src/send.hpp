@@ -18,7 +18,6 @@ private:
     uint64_t iss_;
     uint64_t una_;
     uint64_t nxt_;
-    uint64_t fin_;
 
     // physical buffer offsets
     uint64_t una_pos_;
@@ -39,6 +38,8 @@ private:
     std::deque<segment> in_flight_segments_;
 
     std::unique_ptr<congestion_controller> cong_;
+
+    uint16_t peer_recv_window_;
 
     // callback to perform the wire segment send
     using send_segment_cb = std::function<int64_t(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len)>;
@@ -68,7 +69,7 @@ public:
     // peer ack'd our stream
     int64_t on_ack_recv(uint64_t acknum);
 
-    // header-only sends that consume a seqnum (ack/rst can just be sent directly by connection)
+    // special sends that consume a seqnum (ack/rst don't consume a seqnum, so connection just sends them directly)
     int64_t send_syn();
     int64_t send_syn_ack();
     int64_t send_fin();
@@ -77,18 +78,20 @@ public:
     uint64_t get_num_ready_bytes();
     uint64_t get_num_free_space_bytes();
 
+    void set_peer_recv_window(uint16_t peer_recv_window) { peer_recv_window_ = peer_recv_window; }
+
     std::string to_string() { return ""; }
 
     void on_retransmission_timeout();
 
 private:
-    // send as many next-ready segments as window allows
+    // send as many next-ready segments as our send window allows
     int64_t send_ready_bytes();
 
     // retransmit oldest un-ack'd segment - triggered by congestion event (rto or triple-dup-ack)
     int64_t retransmit_oldest_segment();
 
-    int64_t get_send_window() { return cong_->get_cwnd(); }
+    int64_t get_send_window() { return std::min(cong_->get_cwnd(), (int64_t)peer_recv_window_); }
 
     // increment circ-buffer position `pos` by `n`
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }

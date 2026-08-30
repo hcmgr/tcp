@@ -7,7 +7,6 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
-    fin_ = 0;
 
     una_pos_ = 0;
     nxt_pos_ = 0;
@@ -16,6 +15,8 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     buffer_ = std::make_unique<ring_buffer>(capacity);
 
     cong_ = std::make_unique<congestion_controller>();
+
+    peer_recv_window_ = 0;
 
     send_segment_cb_ = send_segment_cb;
 
@@ -199,7 +200,7 @@ int64_t send_stream::send_ready_bytes() {
 
         uint16_t flags = ack_mask;
 
-        // this segment drains the last of the ready bytes - tack on pending fin
+        // last segment - tack on pending fin
         if (fin_pending_ && payload_len == ready_bytes) {
             flags |= fin_mask;
             fin_pending_ = false;
