@@ -9,7 +9,8 @@
 #include "buffer.hpp"
 #include "define.hpp"
 #include "cong.hpp"
-#include "event_loop.hpp"
+
+struct timeout_handler;
 
 class send_stream {
 private:
@@ -81,11 +82,8 @@ public:
     void on_retransmission_timeout();
 
 private:
-    // attempt to send as many 1-MSS next-ready segments as possible
+    // send as many next-ready segments as window allows
     int64_t send_ready_bytes();
-
-    // send next-ready segment with given `flags` and `payload_len`
-    int64_t send_and_buffer_next_segment(uint16_t flags, uint64_t payload_len);
 
     // retransmit oldest un-ack'd segment - triggered by congestion event (rto or triple-dup-ack)
     int64_t retransmit_oldest_segment();

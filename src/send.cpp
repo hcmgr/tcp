@@ -129,29 +129,38 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 }
 
 int64_t send_stream::send_syn() {
+    uint64_t seqnum = nxt_;
     uint16_t flags = syn_mask;
-    uint64_t payload_len = 0;
-    return send_and_buffer_next_segment(flags, payload_len);
+
+    auto res = send_segment_cb_(seqnum, flags, nullptr, 0);
+    if (res < 0) {
+        return -1;
+    }
+
+    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
+    nxt_ += 1;
+
+    return 0;
 }
 
 int64_t send_stream::send_syn_ack() {
+    uint64_t seqnum = nxt_;
     uint16_t flags = syn_mask | ack_mask;
-    uint64_t payload_len = 0;
-    return send_and_buffer_next_segment(flags, payload_len);
+
+    auto res = send_segment_cb_(seqnum, flags, nullptr, 0);
+    if (res < 0) {
+        return -1;
+    }
+
+    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
+    nxt_ += 1;
+
+    return 0;
 }
 
 int64_t send_stream::send_fin() {
-    if (get_num_ready_bytes() > 0) {
-        // ready data exists before fin - tack fin onto last ready segment
-        fin_pending_ = true;
-        return 0;
-    }
-    else {
-        // no ready data - send fin immediately
-        uint16_t flags = fin_mask | ack_mask;
-        uint64_t payload_len = 0;
-        return send_and_buffer_next_segment(flags, payload_len);
-    }
+    fin_pending_ = true;
+    return send_ready_bytes();
 }
 
 uint64_t send_stream::get_num_in_flight_bytes() {
@@ -174,62 +183,48 @@ void send_stream::on_retransmission_timeout() {
 }
 
 int64_t send_stream::send_ready_bytes() {
-    uint64_t ready = 0;
-    while ((ready = get_num_ready_bytes()) > 0) {
-        uint16_t flags = ack_mask;
-        uint64_t payload_len = ready >= MSS ? MSS : ready;
+    while (get_num_ready_bytes() > 0 || fin_pending_) {
+        uint64_t ready_bytes = get_num_ready_bytes();
+        uint64_t payload_len = ready_bytes >= MSS ? MSS : ready_bytes;
 
         // truncate payload_len to available window
         int64_t available_window = get_send_window() - get_num_in_flight_bytes();
         if (available_window <= 0) {
+            // no available window, can't send now
             break;
         }
         if (payload_len > available_window) {
             payload_len = available_window;
         }
 
-        // last segment - tack pending fin (if any) onto it
-        if (fin_pending_ && payload_len == ready) {
+        uint16_t flags = ack_mask;
+
+        // this segment drains the last of the ready bytes - tack on pending fin
+        if (fin_pending_ && payload_len == ready_bytes) {
             flags |= fin_mask;
             fin_pending_ = false;
         }
 
         // send segment
-        auto sent = send_and_buffer_next_segment(flags, payload_len);
-        if (sent < 0) {
+        uint64_t seqnum = nxt_;
+        uint8_t buf[payload_len];
+        if (payload_len > 0) {
+            buffer_->read(nxt_pos_, buf, payload_len);
+        }
+        auto res = send_segment_cb_(seqnum, flags, buf, payload_len);
+        if (res < 0) {
             return -1;
         }
+
+        // buffer segment for retransmission
+        in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, payload_len});
+
+        // advance nxt
+        nxt_ += payload_len;
+        nxt_pos_ = inc(nxt_pos_, payload_len);
     }
 
     return 0;
-}
-
-int64_t send_stream::send_and_buffer_next_segment(uint16_t flags, uint64_t payload_len) {
-    // send segment
-    uint64_t seqnum = nxt_;
-    uint8_t buf[payload_len];
-    if (payload_len > 0) {
-        buffer_->read(nxt_pos_, buf, payload_len);
-    }
-    auto res = send_segment_cb_(seqnum, flags, buf, payload_len);
-    if (res < 0) {
-        return -1;
-    }
-
-    // buffer segment for retransmission
-    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
-
-    // advance nxt
-    nxt_ += payload_len;
-    if (flags & syn_mask) {
-        nxt_ += 1;
-    }
-    if (flags & fin_mask) {
-        nxt_ += 1;
-    }
-    nxt_pos_ = inc(nxt_pos_, payload_len);
-
-    return payload_len;
 }
 
 int64_t send_stream::retransmit_oldest_segment() {
