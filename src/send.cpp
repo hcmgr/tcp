@@ -216,6 +216,7 @@ int64_t send_stream::send_ready_bytes() {
 
         // last segment - tack on pending fin
         if (fin_pending_ && payload_len == ready_bytes) {
+            fin_ = nxt_ + payload_len;
             flags |= fin_mask;
             fin_pending_ = false;
         }

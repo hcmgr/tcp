@@ -18,6 +18,7 @@
 // general
 #define MSS                         1460
 #define DELAYED_ACK_TIMEOUT_MS      40
+#define TIME_WAIT_TIMEOUT_MS        60*1000 // 60 seconds
 
 enum class tcp_state {
     CLOSED,                 // closed
@@ -30,6 +31,7 @@ enum class tcp_state {
     FIN_WAIT_2,             // sent first FIN, ACK'd by other
     TIME_WAIT,              // received second fin from peer, wait 2 MSL to close
     LAST_ACK,               // sent second fin, waiting on ACK
+    CLOSING,                // sent own fin, received peer's fin (no ack received yet)
 
     DESTROYED               // validly destroyed
 };

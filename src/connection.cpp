@@ -139,8 +139,8 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
         return -1;
     }
 
-    if (state_ != tcp_state::ESTABLISHED) {
-        Log(level::ERROR, std::format("write() in non-ESTABLISHED state is invalid - {}", to_string(state_)));
+    if (!(state_ == tcp_state::ESTABLISHED || state_ == tcp_state::CLOSE_WAIT)) {
+        Log(level::ERROR, std::format("write() in invalid state - {}", to_string(state_)));
         return -1;
     }
 
@@ -153,6 +153,28 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
 }
 
 int64_t connection::close() {
+    if (!(state_ == tcp_state::ESTABLISHED || state_ == tcp_state::CLOSE_WAIT)) {
+        Log(level::ERROR, std::format("close() in invalid state - {}", to_string(state_)));
+        reset();
+        return -1;
+    }
+
+    auto res = send_fin();
+    if (res < 0) {
+        reset();
+        return -1;
+    }
+
+    if (state_ == tcp_state::ESTABLISHED) {
+        state_ = tcp_state::FIN_WAIT_1;
+    }
+    else if (state_ == tcp_state::CLOSE_WAIT) {
+        state_ = tcp_state::LAST_ACK;
+    } 
+    else {
+        throw std::runtime_error(std::format("close() - unreachable state - {}", state_));
+    }
+
     return 0;
 }
 
@@ -179,7 +201,6 @@ int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *paylo
 
     uint32_t to_send_bytes = sizeof(tcp_header) + payload_len;
     uint8_t buf[to_send_bytes];
-
     std::memcpy(buf, &hdr, sizeof(tcp_header));
     if (payload_len > 0) {
         std::memcpy(buf + sizeof(tcp_header), payload_ptr, payload_len);
@@ -216,11 +237,11 @@ void connection::on_recv_segment()
 
     tcp_header hdr = (tcp_header)*segment;
     uint8_t *payload_ptr = segment + sizeof(hdr);
-    uint64_t payload_size = bytes_read - sizeof(hdr);
+    uint64_t payload_len = bytes_read - sizeof(hdr);
 
     bool hdr_valid = hdr.src_port == addr_tuple_.dest_port_ &&
                      hdr.dest_port == addr_tuple_.src_port_ &&
-                     net::tcp_checksum_valid(hdr, payload_ptr, payload_size);
+                     net::tcp_checksum_valid(hdr, payload_ptr, payload_len);
     if (!hdr_valid) {
         Log(level::ERROR, std::format("tcp hdr invalid - tearing down - {}", hdr.to_string()));
         goto fail;
@@ -321,18 +342,17 @@ void connection::on_recv_segment()
                 state_ = tcp_state::ESTABLISHED;
             }
             else {
-                return;
+                goto fail;
             }
         }
         break;
 
         case tcp_state::ESTABLISHED: {
-            // syn invalid in ESTABLISHED state
             if (hdr.syn()) {
                 goto fail;
             }
 
-            // handle ack
+            // accept ack
             if (hdr.ack()) {
                 auto res = send_stream_->on_ack_recv(hdr.acknum);
                 if (res < 0) {
@@ -341,60 +361,84 @@ void connection::on_recv_segment()
             }
 
             // accept segment payload
-            auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_size);
-            if (res < 0) {
-                goto fail;
+            if (payload_len > 0) {
+                auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_len);
+                if (res < 0) {
+                    goto fail;
+                }
+            }
+
+            // accept fin - recv_stream will bump nxt (acknum) +1 so our acknum is correct
+            if (hdr.fin()) {
+                auto res = recv_stream_->on_fin_recv(hdr.seqnum + payload_len);
+                if (res < 0) {
+                    goto fail;
+                }
             }
 
             // ack newly received bytes
             if (delayed_ack_timeout_->active) {
                 // delayed-ack queued - cancel it, and just send this one
                 delayed_ack_timeout_->clear();
-                res = send_ack();
+                auto res = send_ack();
                 if (res < 0) {
                     goto fail;
                 }
             } 
             else {
                 // no current delayed-ack - queue one
-                res = delayed_ack_timeout_->add();
+                auto res = delayed_ack_timeout_->add();
                 if (res < 0) {
                     goto fail;
                 }
             }
 
-            // handle fin
+            // state transition
             if (hdr.fin()) {
-                res = recv_stream_->on_fin_recv(hdr.seqnum + payload_size);
-                if (res < 0) {
-                    goto fail;
-                }
+                state_ = tcp_state::CLOSE_WAIT;
+            } else {
+                state_ = tcp_state::ESTABLISHED;
             }
         }
         break;
 
         case tcp_state::FIN_WAIT_1: {
-
+            // seems mostly the same as ESTALISHED state
+            // difference:
+            //      - must validate our fin was properly ack'd
+            //          - add state machine to send_stream
+            //          - set our fin_ seqnum on send_fin()
+            //          - in on_ack_recv, if our fin has been acked, move into finished state
+            //      - state transition
+            //          - if received seg.fin -> goto CLOSING (simultaneous close)
+            //          - otherwise -> goto FIN_WAIT_2
+            //  
         }
         break;
 
         case tcp_state::CLOSE_WAIT: {
-
+            Log(level::ERROR, "receiving segment in CLOSE_WAIT state is invalid");
+            goto fail;
         }
         break;
 
         case tcp_state::FIN_WAIT_2: {
-
+            // seems mostly same as ESTABLISHED state
+            // difference:
+            //      - their acknum is useless to us now; our send_stream is finished
+            //      - state transition
+            //          - if received seg.fin -> goto TIME_WAIT
+            //          - otherwise -> stay in FIN_WAIT_2
         }
         break;
 
         case tcp_state::TIME_WAIT: {
-
+            Log(level::INFO, "segment received in TIME_WAIT state - silently dropped");
         }
         break;
 
         case tcp_state::LAST_ACK: {
-
+            // should only be receiving peer's ack of our fin
         }
         break;
 

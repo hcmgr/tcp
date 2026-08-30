@@ -18,6 +18,7 @@ private:
     uint64_t iss_;
     uint64_t una_;
     uint64_t nxt_;
+    uint64_t fin_;
 
     // physical buffer offsets
     uint64_t una_pos_;
