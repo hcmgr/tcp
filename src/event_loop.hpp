@@ -92,4 +92,9 @@ struct timeout_handler {
         ev = nullptr;
         active = false;
     }
+
+    void restart() {
+        clear();
+        add();
+    }
 };

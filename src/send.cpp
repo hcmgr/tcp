@@ -23,23 +23,11 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
         RTO_TIMEOUT_MS,
         libevent_on_retransmission_timeout,
         this);
+
+    fin_pending_ = false;
 }
 
 send_stream::~send_stream() {}
-
-int64_t send_stream::on_syn_sent() {
-    nxt_ += 1;
-
-    if (!(una_ == iss_  && nxt_ == iss_ + 1)) {
-        Log(level::ERROR, 
-            std::format(
-                "bad send state reached after on_syn_sent: should have una == iss and nxt == iss + 1 - {}", 
-                to_string()));
-        return -1;
-    }
-
-    return 0;
-}
 
 int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
     if (n == 0) return 0;
@@ -49,7 +37,7 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
         return -1;
     }
 
-    uint64_t free_space = free_space_bytes();
+    uint64_t free_space = get_num_free_space_bytes();
     if (free_space < n) {
         Log(level::ERROR, std::format("insufficient free space for write(): {} < {}", free_space, n));
         return -1;
@@ -74,9 +62,10 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // todo - protect against ridiculously large acknum
 
-    //
+    // restart retransmission timer
+    retransmission_timeout_->restart();
+
     // check for triple-dup-ack
-    //
     auto &last_acks = dup_ack_.last_acks;
     if (last_acks[0] == last_acks[1] && last_acks[1] == acknum) {
         if (acknum > una_) {
@@ -107,20 +96,18 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         cong_->on_ack();
     }
 
-    //
     // advance una, popping segments of our in-flight-queue as necessary
-    //
     while (!in_flight_segments_.empty()) {
         segment &seg = in_flight_segments_.front();
         if (acknum < seg.seqnum) {
             // all now-acked in-flight-segments removed - stop
             break;
         }
-        else if (seg.seqnum <= acknum && acknum <= seg.seqnum + seg.payload_size) {
+        else if (seg.seqnum <= acknum && acknum <= seg.seqnum + seg.payload_len) {
             // segment partially-acked - update
             uint64_t diff = acknum - seg.seqnum;
             seg.seqnum += diff;
-            seg.payload_size -= diff;
+            seg.payload_len -= diff;
             seg.payload_pos = inc(seg.payload_pos, diff);
         } 
         else {
@@ -131,7 +118,7 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     una_ = acknum;
     una_pos_ = inc(una_pos_, acknum - una_);
-    
+
     // ack potentially made new data avail => try send ready bytes
     auto res = send_ready_bytes();
     if (res < 0) {
@@ -141,50 +128,108 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     return 0;
 }
 
-uint64_t send_stream::in_flight_bytes() {
+int64_t send_stream::send_syn() {
+    uint16_t flags = syn_mask;
+    uint64_t payload_len = 0;
+    return send_and_buffer_next_segment(flags, payload_len);
+}
+
+int64_t send_stream::send_syn_ack() {
+    uint16_t flags = syn_mask | ack_mask;
+    uint64_t payload_len = 0;
+    return send_and_buffer_next_segment(flags, payload_len);
+}
+
+int64_t send_stream::send_fin() {
+    if (get_num_ready_bytes() > 0) {
+        // ready data exists before fin - tack fin onto last ready segment
+        fin_pending_ = true;
+        return 0;
+    }
+    else {
+        // no ready data - send fin immediately
+        uint16_t flags = fin_mask | ack_mask;
+        uint64_t payload_len = 0;
+        return send_and_buffer_next_segment(flags, payload_len);
+    }
+}
+
+uint64_t send_stream::get_num_in_flight_bytes() {
     uint64_t capacity = buffer_->capacity();
     return ((nxt_pos_ + capacity) - una_pos_) % capacity;
 }
 
-uint64_t send_stream::ready_bytes() {
+uint64_t send_stream::get_num_ready_bytes() {
     uint64_t capacity = buffer_->capacity();
     return ((wr_pos_ + capacity) - nxt_pos_) % capacity;
 }
 
-uint64_t send_stream::free_space_bytes() {
+uint64_t send_stream::get_num_free_space_bytes() {
     uint64_t capacity = buffer_->capacity();
     return ((una_pos_ + capacity) - wr_pos_) % capacity;
 }
 
-int64_t send_stream::send_ready_bytes() {
-    //
-    // Send all 1-MSS segments we have avail + remainder.
-    // For now, send remainder immediately.
-    // In future:
-    //      If sent (full segments already sent), send immediately.
-    //      Otherwise (< 1-MSS avail), queue a delayed send.
-    //
-    uint64_t ready = 0;
-    while ((ready = ready_bytes()) > 0) {
-        uint32_t seqnum = nxt_;
-        uint16_t flags = ack_mask;
-        uint64_t len = ready >= MSS ? MSS : ready;
-        uint8_t buf[len];
-        buffer_->read(nxt_pos_, buf, len);
+void send_stream::on_retransmission_timeout() {
+    cong_->on_rto();
+}
 
-        int64_t sent_bytes = send_segment_cb_(seqnum, flags, buf, len);
-        if (sent_bytes != MSS) {
-            return -1;
+int64_t send_stream::send_ready_bytes() {
+    uint64_t ready = 0;
+    while ((ready = get_num_ready_bytes()) > 0) {
+        uint16_t flags = ack_mask;
+        uint64_t payload_len = ready >= MSS ? MSS : ready;
+
+        // truncate payload_len to available window
+        int64_t available_window = get_send_window() - get_num_in_flight_bytes();
+        if (available_window <= 0) {
+            break;
+        }
+        if (payload_len > available_window) {
+            payload_len = available_window;
         }
 
-        in_flight_segments_.emplace_back(seqnum, len, nxt_pos_);
+        // last segment - tack pending fin (if any) onto it
+        if (fin_pending_ && payload_len == ready) {
+            flags |= fin_mask;
+            fin_pending_ = false;
+        }
 
-        // advance nxt
-        nxt_ += len;
-        inc(nxt_pos_, len);
+        // send segment
+        auto sent = send_and_buffer_next_segment(flags, payload_len);
+        if (sent < 0) {
+            return -1;
+        }
     }
 
     return 0;
+}
+
+int64_t send_stream::send_and_buffer_next_segment(uint16_t flags, uint64_t payload_len) {
+    // send segment
+    uint64_t seqnum = nxt_;
+    uint8_t buf[payload_len];
+    if (payload_len > 0) {
+        buffer_->read(nxt_pos_, buf, payload_len);
+    }
+    auto res = send_segment_cb_(seqnum, flags, buf, payload_len);
+    if (res < 0) {
+        return -1;
+    }
+
+    // buffer segment for retransmission
+    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
+
+    // advance nxt
+    nxt_ += payload_len;
+    if (flags & syn_mask) {
+        nxt_ += 1;
+    }
+    if (flags & fin_mask) {
+        nxt_ += 1;
+    }
+    nxt_pos_ = inc(nxt_pos_, payload_len);
+
+    return payload_len;
 }
 
 int64_t send_stream::retransmit_oldest_segment() {
@@ -196,17 +241,26 @@ int64_t send_stream::retransmit_oldest_segment() {
     segment &seg = in_flight_segments_.front();
     uint32_t seqnum = seg.seqnum;
     uint16_t flags = ack_mask;
-    uint64_t len = seg.payload_size;
-    uint8_t buf[len];
-    buffer_->read(nxt_pos_, buf, len);
+    uint64_t payload_len = seg.payload_len;
 
-    int64_t sent_bytes = send_segment_cb_(seqnum, flags, buf, len);
-    if (sent_bytes != len) {
+    // truncate payload_len to available window
+    uint64_t available_window = get_send_window() - get_num_in_flight_bytes();
+    available_window += payload_len; // this seg shouldn't contribute to the window
+    if (available_window <= 0) {
+        // no available window, can't send now (next re-tx will send, i.e. on rto or dup-ack)
+        return 0;
+    }
+    if (payload_len > available_window) {
+        payload_len = available_window;
+    }
+
+    // send segment
+    uint8_t buf[payload_len];
+    buffer_->read(seg.payload_pos, buf, payload_len);
+    auto res = send_segment_cb_(seqnum, flags, buf, payload_len);
+    if (res < 0) {
         return -1;
     }
-    return sent_bytes;
-}
 
-void send_stream::on_retransmission_timeout() {
-    cong_->on_rto();
+    return 0;
 }

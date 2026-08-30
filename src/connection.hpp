@@ -10,6 +10,8 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
+struct timeout_handler;
+
 struct addr_tuple {
     std::string src_ip_;
     std::string dest_ip_;
@@ -67,9 +69,7 @@ public:
 public:
     //
     // Send segment to peer with given seqnum, flags, and optionally a payload.
-    // Called by: 
-    //      a) send_stream, to send payload segments, or 
-    //      b) connection itself, to send header-only segments
+    // Called by send_stream, as it decides when to send segments.
     //
     int64_t send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
@@ -98,7 +98,7 @@ private:
     // header-only sends
     int64_t send_syn();
     int64_t send_syn_ack();
-    int64_t send_ack();
     int64_t send_fin();
+    int64_t send_ack();
     int64_t send_rst();
 };

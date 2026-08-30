@@ -9,7 +9,7 @@
 #include "buffer.hpp"
 #include "define.hpp"
 #include "cong.hpp"
-#include "buffer.hpp"
+#include "event_loop.hpp"
 
 class send_stream {
 private:
@@ -29,8 +29,9 @@ private:
 
     struct segment {
         uint64_t seqnum;
-        uint64_t payload_size;
+        uint16_t flags;
         uint64_t payload_pos;   // position in physical buffer of first byte
+        uint64_t payload_len;
     };
 
     // un-ack'd / in-flight segments
@@ -53,46 +54,44 @@ private:
 
     std::unique_ptr<timeout_handler> retransmission_timeout_;
 
+    bool fin_pending_;
+
 public:
     send_stream(uint64_t capacity, send_segment_cb send_segment_cb);
     ~send_stream();
 
 public:
-    // handshake syn sent by connection (advance nxt)
-    int64_t on_syn_sent();
-
-    // handshake fin sent by connection (advance nxt)
-    int64_t on_fin_sent();
-
     // user write new bytes to send
     int64_t write(uint64_t n, uint8_t *src_buffer);
 
     // peer ack'd our stream
     int64_t on_ack_recv(uint64_t acknum);
 
-public:
-    uint64_t in_flight_bytes();
-    uint64_t ready_bytes();
-    uint64_t free_space_bytes();
+    // header-only sends that consume a seqnum (ack/rst can just be sent directly by connection)
+    int64_t send_syn();
+    int64_t send_syn_ack();
+    int64_t send_fin();
 
-    uint64_t get_cwnd() { return cong_->get_cwnd(); }
-    uint64_t get_nxt() { return nxt_; }
+    uint64_t get_num_in_flight_bytes();
+    uint64_t get_num_ready_bytes();
+    uint64_t get_num_free_space_bytes();
+
     std::string to_string() { return ""; }
 
-public:
     void on_retransmission_timeout();
 
 private:
-    //
-    // Send ready bytes (nxt onwards) on new data avail, i.e. on:
-    //      a) user write, or;
-    //      b) ack recv
-    //
+    // attempt to send as many 1-MSS next-ready segments as possible
     int64_t send_ready_bytes();
 
-    // triggered by a congestion event (rto or triple dup ack)
+    // send next-ready segment with given `flags` and `payload_len`
+    int64_t send_and_buffer_next_segment(uint16_t flags, uint64_t payload_len);
+
+    // retransmit oldest un-ack'd segment - triggered by congestion event (rto or triple-dup-ack)
     int64_t retransmit_oldest_segment();
 
-private:
+    int64_t get_send_window() { return cong_->get_cwnd(); }
+
+    // increment circ-buffer position `pos` by `n`
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
 };

@@ -144,7 +144,7 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
         return -1;
     }
 
-    int64_t free_space = send_stream_->free_space_bytes();
+    int64_t free_space = send_stream_->get_num_free_space_bytes();
     if (free_space < n) {
         Log(level::ERROR, std::format("insufficient space for write() - free_space={} < n={}", free_space, n));
         return -1;
@@ -174,7 +174,7 @@ tcp_header connection::make_header(uint32_t seqnum,
     hdr.seqnum = seqnum;
     hdr.acknum = recv_stream_->nxt();
     hdr.flags = flags;
-    hdr.window = std::min(send_stream_->get_cwnd(), recv_stream_->free_space_bytes());
+    hdr.window = recv_stream_->free_space_bytes();
     hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
 
     return hdr;
@@ -210,7 +210,9 @@ int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *paylo
     return sent_bytes;
 }
 
-void connection::on_recv_segment() 
+
+
+void connection::on_recv_segment()
 {
     uint32_t max_datagram_size = MSS + sizeof(tcp_header);
     uint8_t segment[max_datagram_size];
@@ -430,36 +432,6 @@ void connection::on_delayed_ack_timeout() {
     delayed_ack_timeout_->clear();
 }
 
-int64_t connection::send_syn() {
-    uint64_t seqnum = send_stream_->get_nxt();
-    uint16_t flags = syn_mask;
-    return send_segment(seqnum, flags, nullptr, 0);
-}
-
-int64_t connection::send_syn_ack() {
-    uint64_t seqnum = send_stream_->get_nxt();
-    uint16_t flags = syn_mask | ack_mask;
-    return send_segment(seqnum, flags, nullptr, 0);
-}
-
-int64_t connection::send_ack() {
-    uint64_t seqnum = send_stream_->get_nxt();
-    uint16_t flags = ack_mask;
-    return send_segment(seqnum, flags, nullptr, 0);
-}
-
-int64_t connection::send_fin() {
-    uint64_t seqnum = send_stream_->get_nxt();
-    uint16_t flags = fin_mask | ack_mask;
-    return send_segment(seqnum, flags, nullptr, 0);
-}
-
-int64_t connection::send_rst() {
-    uint64_t seqnum = 0;
-    uint16_t flags = rst_mask;
-    return send_segment(seqnum, flags, nullptr, 0);
-}
-
 void connection::reset() {
     // send rst
     send_rst();
@@ -503,4 +475,34 @@ void connection::destroy() {
     // recv_stream_ = nullptr;
 
     state_ = tcp_state::DESTROYED;
+}
+
+//
+// for our header-only sends:
+//      syn/syn_ack/fin all consume a seqnum, and are thus routed through send_stream.
+//      ack/rst consume no seqnum, so we can send from connection immediately.
+//
+
+int64_t connection::send_syn() {
+    return send_stream_->send_syn();
+}
+
+int64_t connection::send_syn_ack() {
+    return send_stream_->send_syn_ack();
+}
+
+int64_t connection::send_fin() {
+    return send_stream_->send_fin();
+}
+
+int64_t connection::send_ack() {
+    uint64_t seqnum = 0;
+    uint16_t flags = ack_mask;
+    return send_segment(seqnum, flags, nullptr, 0);
+}
+
+int64_t connection::send_rst() {
+    uint64_t seqnum = 0;
+    uint16_t flags = rst_mask;
+    return send_segment(seqnum, flags, nullptr, 0);
 }
