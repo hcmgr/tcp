@@ -63,9 +63,6 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // todo - protect against ridiculously large acknum
 
-    // restart retransmission timer
-    retransmission_timeout_->restart();
-
     // check for triple-dup-ack
     auto &last_acks = dup_ack_.last_acks;
     if (last_acks[0] == last_acks[1] && last_acks[1] == acknum) {
@@ -120,6 +117,12 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     una_ = acknum;
     una_pos_ = inc(una_pos_, acknum - una_);
 
+    // clear current re-tx timer, start new one if unack'd bytes remain
+    retransmission_timeout_->clear();
+    if (!in_flight_segments_.empty()) {
+        retransmission_timeout_->add();
+    }
+
     // ack potentially made new data avail => try send ready bytes
     auto res = send_ready_bytes();
     if (res < 0) {
@@ -138,7 +141,9 @@ int64_t send_stream::send_syn() {
         return -1;
     }
 
-    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
+    if (buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, 0}) < 0) {
+        return -1;
+    }
     nxt_ += 1;
 
     return 0;
@@ -153,7 +158,9 @@ int64_t send_stream::send_syn_ack() {
         return -1;
     }
 
-    in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, 0});
+    if (buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, 0}) < 0) {
+        return -1;
+    }
     nxt_ += 1;
 
     return 0;
@@ -180,6 +187,13 @@ uint64_t send_stream::get_num_free_space_bytes() {
 }
 
 void send_stream::on_retransmission_timeout() {
+    auto res = retransmit_oldest_segment();
+    if (res < 0) {
+        Log(level::ERROR, "retransmit_oldest_segment() failed");
+        return;
+    }
+
+    retransmission_timeout_->restart();
     cong_->on_rto();
 }
 
@@ -217,12 +231,32 @@ int64_t send_stream::send_ready_bytes() {
             return -1;
         }
 
-        // buffer segment for retransmission
-        in_flight_segments_.push_back(segment{seqnum, flags, nxt_pos_, payload_len});
+        // buffer for retransmission
+        res = buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, payload_len});
+        if (res < 0) {
+            return -1;
+        }
 
         // advance nxt
         nxt_ += payload_len;
         nxt_pos_ = inc(nxt_pos_, payload_len);
+    }
+
+    return 0;
+}
+
+int64_t send_stream::buffer_segment_for_retransmission(const segment &seg) {
+    in_flight_segments_.push_back(seg);
+    if (seg.seqnum == una_) {
+        if (!in_flight_segments_.empty()) {
+            Log(level::ERROR, "sent segment with seqnum==una==nxt (implies no unack'd bytes), yet there are still unack'd bytes - invalid");
+            return -1;
+        }
+        if (retransmission_timeout_->active) {
+            Log(level::ERROR, "sent segment with seqnum==una==nxt (implies no unack'd bytes), yet rto timeout still active - invalid");
+            return -1;
+        }
+        retransmission_timeout_->add();
     }
 
     return 0;

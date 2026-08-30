@@ -91,6 +91,9 @@ private:
     // retransmit oldest un-ack'd segment - triggered by congestion event (rto or triple-dup-ack)
     int64_t retransmit_oldest_segment();
 
+    // record a just-sent segment as in-flight for retransmission, arming the rto timer if needed
+    int64_t buffer_segment_for_retransmission(const segment &seg);
+
     int64_t get_send_window() { return std::min(cong_->get_cwnd(), (int64_t)peer_recv_window_); }
 
     // increment circ-buffer position `pos` by `n`
