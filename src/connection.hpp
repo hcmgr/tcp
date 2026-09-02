@@ -4,6 +4,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <algorithm>
+#include <unistd.h>
 
 #include "define.hpp"
 #include "send.hpp"
@@ -41,6 +42,8 @@ private:
     std::unique_ptr<send_stream> send_stream_;
     std::unique_ptr<recv_stream> recv_stream_;
 
+    struct event *recv_segment_ev_;
+
     std::unique_ptr<timeout_handler> delayed_ack_timeout_;
 
     std::mutex pending_open_mtx_;
@@ -64,7 +67,7 @@ public:
     int64_t open(const conn_type &conn_type);
     int64_t read(uint64_t n, uint8_t *dest_buffer);
     int64_t write(uint64_t n, uint8_t *src_buffer);
-    int64_t close();
+    int64_t shutdown();
 
 public:
     //

@@ -5,20 +5,21 @@
 
 connection::connection(uint64_t id, const addr_tuple &addr_tuple)
 {
-    //
     // Constructor is intentionally thin - we don't want to initialise the 'heavy' state until 
     // open() called (udp socket, recv_segment event, send/recv streams, etc).
-    //
     id_ = id;
     addr_tuple_ = addr_tuple;
+    recv_segment_ev_ = nullptr;
     state_ = tcp_state::CLOSED;
 }
 
 connection::~connection() {
-    // In most cases, connection would have proactively destroyed itself,
-    // so this call is just-in-case. destroy() is (and should always remain) idempotent, so
-    // calling multiple times should have no side effects.
-    destroy();
+    // In all cases, connection should proactively destroy itself, and will notify
+    // owning manager its destroyed. This is just in case.
+    if (state_ != tcp_state::CLOSED) {
+        Log(level::ERROR, "destroy() called from destructor - this late indicates something's wrong");
+        destroy();
+    }
 }
 
 int64_t connection::open(const conn_type &conn_type) {
@@ -30,31 +31,34 @@ int64_t connection::open(const conn_type &conn_type) {
     // create udp socket
     udp_socket_fd_ = net::create_udp_socket(addr_tuple_.src_ip_, addr_tuple_.dest_ip_, addr_tuple_.src_port_, addr_tuple_.dest_port_);
     if (udp_socket_fd_ == -1) {
-        destroy();
-        return -1;
+        goto fail;
     }
 
     // add recv_segment event to event loop
-    struct event *recv_segment_ev = event_new(manager::get_instance().get_event_base(),
-                                              udp_socket_fd_, 
-                                              EV_READ|EV_PERSIST, 
-                                              libevent_on_recv_segment, 
-                                              (void*)this);
-    if (recv_segment_ev == NULL) {
-        Log(level::ERROR, "failed to create recv_segment_ev event");
-        return -1;
-    }
-    if (event_add(recv_segment_ev, NULL) < 0) {
-        Log(level::ERROR, "failed to add recv_segment_ev event");
-        return -1;
+    {
+        recv_segment_ev_ = event_new(manager::get_instance().get_event_base(),
+                                    udp_socket_fd_,
+                                    EV_READ|EV_PERSIST,
+                                    libevent_on_recv_segment,
+                                    (void*)this);
+        if (recv_segment_ev_ == NULL) {
+            Log(level::ERROR, "failed to create recv_segment_ev event");
+            goto fail;
+        }
+        if (event_add(recv_segment_ev_, NULL) < 0) {
+            Log(level::ERROR, "failed to add recv_segment_ev event");
+            goto fail;
+        }
     }
 
     // create send and recv streams
-    auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
-        return send_segment(seqnum, flags, payload_ptr, payload_len);
-    };
-    send_stream_ = std::make_unique<send_stream>(SEND_BUFFER_CAPACITY, send_segment_cb);
-    recv_stream_ = std::make_unique<recv_stream>(RECV_BUFFER_CAPACITY);
+    {
+        auto send_segment_cb = [this](uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
+            return send_segment(seqnum, flags, payload_ptr, payload_len);
+        };
+        send_stream_ = std::make_unique<send_stream>(SEND_BUFFER_CAPACITY, send_segment_cb);
+        recv_stream_ = std::make_unique<recv_stream>(RECV_BUFFER_CAPACITY);
+    }
 
     // create delayed ack timeout handler
     delayed_ack_timeout_ = std::make_unique<timeout_handler>(
@@ -81,22 +85,27 @@ int64_t connection::open(const conn_type &conn_type) {
     }
 
     // block until move out of handshake state
-    std::unique_lock<std::mutex> ul(pending_open_mtx_);
-    pending_open_cv_.wait(ul, [&] {
-        return (
-            state_ != tcp_state::LISTEN &&
-            state_ != tcp_state::SYN_SENT &&
-            state_ != tcp_state::SYN_RECEIVED
-        );
-    });
+    {
+        std::unique_lock<std::mutex> ul(pending_open_mtx_);
+        pending_open_cv_.wait(ul, [&] {
+            return (
+                state_ != tcp_state::LISTEN &&
+                state_ != tcp_state::SYN_SENT &&
+                state_ != tcp_state::SYN_RECEIVED
+            );
+        });
+    }
 
     // wake up - teardown if haven't entered ESTABLISHED state
     if (state_ != tcp_state::ESTABLISHED) {
-        reset();
-        return -1;
+        goto fail;
     }
 
     return 0;
+
+fail:
+    reset();
+    return -1;
 }
 
 int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
@@ -106,7 +115,6 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
         Log(level::ERROR, "read() dest_buffer ptr is null");
         return -1;
     }
-
 
     if (state_ != tcp_state::ESTABLISHED) {
         Log(level::ERROR, std::format("read() in non-ESTABLISHED state is invalid - {}", to_string(state_)));
@@ -152,7 +160,7 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
     return bytes_written;
 }
 
-int64_t connection::close() {
+int64_t connection::shutdown() {
     if (!(state_ == tcp_state::ESTABLISHED || state_ == tcp_state::CLOSE_WAIT)) {
         Log(level::ERROR, std::format("close() in invalid state - {}", to_string(state_)));
         reset();
@@ -269,9 +277,7 @@ void connection::on_recv_segment()
                 goto fail;
             
             if (hdr.syn() && !hdr.ack()) {
-                //
                 // syn received
-                //
 
                 // accept peer's iss
                 auto res = recv_stream_->on_syn_recv(hdr.seqnum);
@@ -299,9 +305,7 @@ void connection::on_recv_segment()
             }
             
             if (hdr.syn() && hdr.ack()) {
-                //
                 // syn-ack received
-                //
 
                 // accept peer's iss
                 auto res = recv_stream_->on_syn_recv(hdr.seqnum);
@@ -336,9 +340,7 @@ void connection::on_recv_segment()
             }
 
             if(!hdr.syn() && hdr.ack()) {
-                //
                 // ack received
-                //
                 state_ = tcp_state::ESTABLISHED;
             }
             else {
@@ -433,14 +435,48 @@ void connection::on_recv_segment()
         break;
 
         case tcp_state::TIME_WAIT: {
-            Log(level::INFO, "segment received in TIME_WAIT state - silently dropped");
+            //
+            // During TIME_WAIT state, we're waiting TIME_WAIT_MS to close.
+            // If we receive a segment, it's cause our ack of their fin didn't
+            // arrive, and they have re-tx'd it. All other cases are invalid.
+            //
+
+            // verify the implied fin number (seqnum + payload_len) is what we expect
+            
+            // send ack
         }
         break;
 
         case tcp_state::LAST_ACK: {
-            // should only be receiving peer's ack of our fin
+            // should be receiving peer's ack of our fin (nothing else)
+            if (!hdr.ack() || hdr.syn() || hdr.fin()) {
+                goto fail;
+            }
+
+            auto res = send_stream_->on_ack_recv(hdr.acknum);
+            if (res < 0) {
+                goto fail;
+            }
+
+            destroy();
         }
         break;
+    
+        case tcp_state::CLOSING: {
+            // should be receiving peer's ack of our fin (nothing else)
+            if (!hdr.ack() || hdr.syn() || hdr.fin()) {
+                goto fail;
+            }
+
+            auto res = send_stream_->on_ack_recv(hdr.acknum);
+            if (res < 0) {
+                goto fail;
+            }
+
+            // todo - check send stream has finished
+
+            state_ = tcp_state::TIME_WAIT;
+        } break;
 
         default: {
             throw std::runtime_error("unknown tcp_state reached");
@@ -479,40 +515,24 @@ void connection::reset() {
 }
 
 void connection::destroy() {
-    //
-    // cleanup all our state
-    //
-    
-    //
-    // Notify owning manager we're destroying connection, so it can
-    // remove connection from the active list.
-    //
+    // remove and free recv segment event
+    event_free(recv_segment_ev_);
+    recv_segment_ev_ = nullptr;
+
+    // close udp socket
+    auto res = close(udp_socket_fd_);
+    if (res < 0) {
+        // not much else we can do here, as we're CURRENTLY destroying - sucks to suck
+        throw std::runtime_error(std::format("error closing udp socket fd - {}", strerror(errno)));
+    }
 
     //
-    // example
+    // rest of the state will free on RAII
     //
 
-    // state_ = tcp_state::CLOSED;
-    // if (recv_segment_ev_) {
-    //     event_del(recv_segment_ev_);
-    //     event_free(recv_segment_ev_);
-    //     recv_segment_ev_ = nullptr;
-    // }
-    // if (timeout_ev_) {
-    //     event_del(timeout_ev_);
-    //     event_free(timeout_ev_);
-    //     timeout_ev_ = nullptr;
-    // }
-    // if (udp_socket_fd_ != -1) {
-    //     close(udp_socket_fd_);
-    //     udp_socket_fd_ = -1;
-    // }
-    // delete send_stream_;
-    // send_stream_ = nullptr;
-    // delete recv_stream_;
-    // recv_stream_ = nullptr;
-
-    state_ = tcp_state::DESTROYED;
+    // move to closed state, and notify manager we validly closed
+    state_ = tcp_state::CLOSED;
+    manager::get_instance().on_connection_destroy(id_);
 }
 
 //

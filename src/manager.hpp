@@ -53,6 +53,17 @@ public:
         return conn;
     }
 
+    void on_connection_destroy(uint64_t id) {
+        auto it = active_connections_.find(id);
+        if (it == active_connections_.end()) {
+            throw std::runtime_error(std::format("on_connection_destroy() - no active connection registered for conn id == {}", id));
+        }
+        if (it->second->get_state() != tcp_state::CLOSED) {
+            throw std::runtime_error(std::format("on_connection_destroy() - conn id == {} not in CLOSED state", id));
+        }
+        active_connections_.erase(it);
+    }
+
 private:
     void start_event_loop() {
         event_base_ = event_base_new();
@@ -67,11 +78,9 @@ private:
     }
 
     void destroy() {
-        //
         // Clear active connections - RAII destroy()'s any open connections. 
         // Means we are aggressively closing our side of the connection. 
         // Given we're at the end of our process here, not much else we can do.
-        //
         active_connections_.clear();
 
         // stop and free event loop

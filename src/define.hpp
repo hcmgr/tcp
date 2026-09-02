@@ -18,7 +18,7 @@
 // general
 #define MSS                         1460
 #define DELAYED_ACK_TIMEOUT_MS      40
-#define TIME_WAIT_TIMEOUT_MS        60*1000 // 60 seconds
+#define TIME_WAIT_MS        60*1000 // 60 seconds
 
 enum class tcp_state {
     CLOSED,                 // closed
@@ -26,14 +26,12 @@ enum class tcp_state {
     SYN_SENT,               // sent first SYN, waiting on its ACK
     SYN_RECEIVED,           // received first SYN, should now send own SYN
     ESTABLISHED,            // normal send/receive state
-    FIN_WAIT_1,             // sent first fin
-    CLOSE_WAIT,             // received first fin from peer
-    FIN_WAIT_2,             // sent first FIN, ACK'd by other
-    TIME_WAIT,              // received second fin from peer, wait 2 MSL to close
-    LAST_ACK,               // sent second fin, waiting on ACK
-    CLOSING,                // sent own fin, received peer's fin (no ack received yet)
-
-    DESTROYED               // validly destroyed
+    FIN_WAIT_1,             // sent first fin - waiting on ack
+    CLOSE_WAIT,             // received first fin - sent ack - waiting to send YOUR fin
+    FIN_WAIT_2,             // your first fin ack'd - waiting on peer's fin
+    TIME_WAIT,              // received second fin from peer - sent ack - wait 2MSL to close
+    LAST_ACK,               // sent second fin - waiting on ack to close
+    CLOSING,                // sent own fin, received peer's fin (simultaneous close case)
 };
 
 inline std::string to_string(tcp_state state) {
@@ -48,7 +46,6 @@ inline std::string to_string(tcp_state state) {
         case tcp_state::FIN_WAIT_2:   return "FIN_WAIT_2";
         case tcp_state::TIME_WAIT:    return "TIME_WAIT";
         case tcp_state::LAST_ACK:     return "LAST_ACK";
-        case tcp_state::DESTROYED:    return "DESTROYED";
     }
     return "UNKNOWN";
 }
