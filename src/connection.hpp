@@ -11,8 +11,6 @@
 #include "recv.hpp"
 #include "utils.hpp"
 
-struct timeout_handler;
-
 struct addr_tuple {
     std::string src_ip_;
     std::string dest_ip_;

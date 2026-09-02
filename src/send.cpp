@@ -7,6 +7,7 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
+    fin_ = 0;
 
     una_pos_ = 0;
     nxt_pos_ = 0;
@@ -25,14 +26,17 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
         libevent_on_retransmission_timeout,
         this);
 
-    fin_pending_ = false;
+    state_ = state::ESTABLISHED;
 }
 
 send_stream::~send_stream() {}
 
 int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
-    if (n == 0) return 0;
+    if (state_ != state::ESTABLISHED) {
+        return -1;
+    }
 
+    if (n == 0) return 0;
     if (src_buffer == nullptr) {
         Log(level::ERROR, "write() src_buffer is null");
         return -1;
@@ -56,12 +60,19 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
 }
 
 int64_t send_stream::on_ack_recv(uint64_t acknum) {
-    if (acknum < una_) {
-        // old ack - ignore
-        return 0;
+    if (state_ == state::FINISHED) {
+        return -1;
     }
 
-    // todo - protect against ridiculously large acknum
+    if (acknum < una_) {
+        // old ack - silently ignore
+        return 0;
+    }
+    if (acknum >= nxt_) {
+        // ack past any seqnums we've sent - invalid
+        Log(level::ERROR, std::format("acknum {} >= nxt {}, i.e. acknum past any seqnums we've sent", acknum, nxt_));
+        return -1;
+    }
 
     // check for triple-dup-ack
     auto &last_acks = dup_ack_.last_acks;
@@ -117,6 +128,25 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     una_ = acknum;
     una_pos_ = inc(una_pos_, acknum - una_);
 
+    // check if peer has ack'd our fin
+    if (una_ > fin_) {
+        Log(level::ERROR, std::format("una ({}) > fin ({}), i.e. peer ack'd beyond fin"));
+        return -1;
+    }
+    if (una_ == fin_) {
+        if (state_ != state::FIN_SENT) {
+            Log(level::ERROR, std::format("peer ack'd our fin, yet not in FIN_SENT state - state=={}", state_));
+            return -1;
+        }
+        if (!(una_ == nxt_ && in_flight_segments_.empty())) {
+            Log(level::ERROR, "peer ack'd our fin, yet we still have in-flight bytes");
+            return -1;
+        }
+
+        // peer validly ack'd our fin - finish stream
+        state_ = state::FINISHED;
+    }
+
     // clear current re-tx timer, start new one if unack'd bytes remain
     retransmission_timeout_->clear();
     if (!in_flight_segments_.empty()) {
@@ -133,15 +163,17 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 }
 
 int64_t send_stream::send_syn() {
-    uint64_t seqnum = nxt_;
-    uint16_t flags = syn_mask;
+    if (state_ != state::ESTABLISHED) {
+        return -1;
+    }
 
-    auto res = send_segment_cb_(seqnum, flags, nullptr, 0);
+    uint16_t flags = syn_mask;
+    auto res = send_segment_cb_(nxt_, flags, nullptr, 0);
     if (res < 0) {
         return -1;
     }
 
-    if (buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, 0}) < 0) {
+    if (buffer_segment_for_retransmission(segment{nxt_, flags, nxt_pos_, 0}) < 0) {
         return -1;
     }
     nxt_ += 1;
@@ -150,15 +182,17 @@ int64_t send_stream::send_syn() {
 }
 
 int64_t send_stream::send_syn_ack() {
-    uint64_t seqnum = nxt_;
-    uint16_t flags = syn_mask | ack_mask;
+    if (state_ != state::ESTABLISHED) {
+        return -1;
+    }
 
-    auto res = send_segment_cb_(seqnum, flags, nullptr, 0);
+    uint16_t flags = syn_mask | ack_mask;
+    auto res = send_segment_cb_(nxt_, flags, nullptr, 0);
     if (res < 0) {
         return -1;
     }
 
-    if (buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, 0}) < 0) {
+    if (buffer_segment_for_retransmission(segment{nxt_, flags, nxt_pos_, 0}) < 0) {
         return -1;
     }
     nxt_ += 1;
@@ -167,7 +201,11 @@ int64_t send_stream::send_syn_ack() {
 }
 
 int64_t send_stream::send_fin() {
-    fin_pending_ = true;
+    if (state_ != state::ESTABLISHED) {
+        return -1;
+    }
+
+    state_ = state::FIN_PENDING;
     return send_ready_bytes();
 }
 
@@ -198,7 +236,7 @@ void send_stream::on_retransmission_timeout() {
 }
 
 int64_t send_stream::send_ready_bytes() {
-    while (get_num_ready_bytes() > 0 || fin_pending_) {
+    while (get_num_ready_bytes() > 0 || state_ == state::FIN_PENDING) {
         uint64_t ready_bytes = get_num_ready_bytes();
         uint64_t payload_len = ready_bytes >= MSS ? MSS : ready_bytes;
 
@@ -214,26 +252,26 @@ int64_t send_stream::send_ready_bytes() {
 
         uint16_t flags = ack_mask;
 
-        // last segment - tack on pending fin
-        if (fin_pending_ && payload_len == ready_bytes) {
+        // for last segment - tack on pending fin
+        bool sending_fin = false;
+        if (state_ == state::FIN_PENDING && payload_len == ready_bytes) {
             fin_ = nxt_ + payload_len;
             flags |= fin_mask;
-            fin_pending_ = false;
+            sending_fin = true;
         }
 
         // send segment
-        uint64_t seqnum = nxt_;
         uint8_t buf[payload_len];
         if (payload_len > 0) {
             buffer_->read(nxt_pos_, buf, payload_len);
         }
-        auto res = send_segment_cb_(seqnum, flags, buf, payload_len);
+        auto res = send_segment_cb_(nxt_, flags, buf, payload_len);
         if (res < 0) {
             return -1;
         }
 
         // buffer for retransmission
-        res = buffer_segment_for_retransmission(segment{seqnum, flags, nxt_pos_, payload_len});
+        res = buffer_segment_for_retransmission(segment{nxt_, flags, nxt_pos_, payload_len});
         if (res < 0) {
             return -1;
         }
@@ -241,6 +279,9 @@ int64_t send_stream::send_ready_bytes() {
         // advance nxt
         nxt_ += payload_len;
         nxt_pos_ = inc(nxt_pos_, payload_len);
+        if (sending_fin) {
+            state_ = state::FIN_SENT;
+        }
     }
 
     return 0;

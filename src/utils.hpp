@@ -1,6 +1,8 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <format>
+#include <event2/event.h>
 
 #include "define.hpp"
 
@@ -36,5 +38,22 @@ enum class level {
 
 namespace logging {
     void log_impl(level level, const char *file, int line, const std::string &message);
+};
+
+//////////////////////////////////////////////////////////////////
+// events
+//////////////////////////////////////////////////////////////////
+
+struct timeout_handler {
+    bool active;
+    struct event *ev;
+    uint32_t timeout_ms;
+
+    timeout_handler(uint32_t timeout_ms, event_callback_fn cb, void *arg);
+    ~timeout_handler();
+
+    int64_t add();
+    void clear();
+    void restart();
 };
 

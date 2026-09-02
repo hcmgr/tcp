@@ -9,8 +9,7 @@
 #include "buffer.hpp"
 #include "define.hpp"
 #include "cong.hpp"
-
-struct timeout_handler;
+#include "utils.hpp"
 
 class send_stream {
 private:
@@ -57,7 +56,13 @@ private:
 
     std::unique_ptr<timeout_handler> retransmission_timeout_;
 
-    bool fin_pending_;
+    enum class state {
+        ESTABLISHED,
+        FIN_PENDING,
+        FIN_SENT,
+        FINISHED
+    };
+    state state_;
 
 public:
     send_stream(uint64_t capacity, send_segment_cb send_segment_cb);

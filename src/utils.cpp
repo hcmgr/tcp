@@ -10,6 +10,7 @@
 
 #include "utils.hpp"
 #include "define.hpp"
+#include "manager.hpp"
 
 //////////////////////////////////////////////////////////////////
 // networking
@@ -180,3 +181,51 @@ namespace logging {
         << message << '\n';
     }
 }; // logging
+
+//////////////////////////////////////////////////////////////////
+// event loop
+//////////////////////////////////////////////////////////////////
+
+timeout_handler::timeout_handler(uint32_t timeout_ms, event_callback_fn cb, void *arg)
+    : active(false), ev(nullptr), timeout_ms(timeout_ms)
+{
+    ev = event_new(manager::get_instance().get_event_base(), -1, EV_TIMEOUT, cb, arg);
+    if (ev == nullptr) {
+        clear();
+        return;
+    }
+
+    active = true;
+}
+
+timeout_handler::~timeout_handler() { clear(); }
+
+int64_t timeout_handler::add() {
+    if (active) {
+        Log(level::ERROR, "timeout_handler add() whilst active");
+        return -1;
+    }
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int res = event_add(ev, &tv);
+    if (res < 0) {
+        Log(level::ERROR, std::format("timeout_handler add() failed - {}", strerror(errno)));
+        return -1;
+    }
+
+    active = true;
+    return 0;
+}
+
+void timeout_handler::clear() {
+    event_free(ev);
+    ev = nullptr;
+    active = false;
+}
+
+void timeout_handler::restart() {
+    clear();
+    add();
+}
