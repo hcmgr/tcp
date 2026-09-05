@@ -33,12 +33,12 @@ TEST(RecvStreamTest, SynContiguousSegmentsThenFin) {
     uint64_t seq_c = seq_b + b.size();
 
     EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), (int64_t)a.size());
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)a.size());
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
 
     EXPECT_EQ(rs.recv_segment(seq_b, (uint8_t*)b.data(), b.size()), (int64_t)b.size());
     EXPECT_EQ(rs.recv_segment(seq_c, (uint8_t*)c.data(), c.size()), (int64_t)c.size());
 
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
     EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
 
     uint64_t fin = seq_c + c.size();
@@ -69,15 +69,15 @@ TEST(RecvStreamTest, SynOutOfOrderSegmentsThenFin) {
     // deliver out-of-order: C, then A, then B
     EXPECT_EQ(rs.recv_segment(seq_c, (uint8_t*)c.data(), c.size()), (int64_t)c.size());
     // nothing contiguous with nxt_ yet - not ready to read
-    EXPECT_EQ(rs.ready_bytes(), 0);
+    EXPECT_EQ(rs.get_num_ready_bytes(), 0);
 
     EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), (int64_t)a.size());
     // only A is contiguous with nxt_ - B/C still pending
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)a.size());
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
 
     EXPECT_EQ(rs.recv_segment(seq_b, (uint8_t*)b.data(), b.size()), (int64_t)b.size());
     // B arriving closes the gap, so B and the earlier C both become readable
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
 
     EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
 
@@ -102,13 +102,13 @@ TEST(RecvStreamTest, DuplicateAndOverlappingSegmentsAreTrimmed) {
 
     // fully-duplicate retransmit of A - silently dropped, no change
     EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), 0);
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)a.size());
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
 
     // partial overlap with already-received bytes - only the new tail is taken
     std::string overlap_tail = "6789XY";
     uint64_t seq_overlap = seq_a + 6; // bytes irs+7..irs+10 already received
     EXPECT_EQ(rs.recv_segment(seq_overlap, (uint8_t*)overlap_tail.data(), overlap_tail.size()), 2); // only "XY" is new
-    EXPECT_EQ(rs.ready_bytes(), (int64_t)(a.size() + 2));
+    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + 2));
     EXPECT_EQ(read_n(rs, a.size() + 2), a + "XY");
 }
 
@@ -126,13 +126,13 @@ TEST(RecvStreamTest, BufferWrapsAroundAcrossMultipleCycles) {
         std::string chunk = std::to_string(i) + "-chunk"; // ~8 bytes, forces several wraps over TEST_CAPACITY=64
 
         ASSERT_EQ(rs.recv_segment(seq, (uint8_t*)chunk.data(), chunk.size()), (int64_t)chunk.size());
-        ASSERT_EQ(rs.ready_bytes(), (int64_t)chunk.size());
+        ASSERT_EQ(rs.get_num_ready_bytes(), (int64_t)chunk.size());
         EXPECT_EQ(read_n(rs, chunk.size()), chunk);
 
         seq += chunk.size();
     }
 
-    EXPECT_EQ(rs.ready_bytes(), 0);
+    EXPECT_EQ(rs.get_num_ready_bytes(), 0);
 }
 
 //

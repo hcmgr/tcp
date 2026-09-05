@@ -84,11 +84,11 @@ public:
     uint64_t get_num_ready_bytes();
     uint64_t get_num_free_space_bytes();
 
-    void set_peer_recv_window(uint16_t peer_recv_window) { peer_recv_window_ = peer_recv_window; }
-
-    std::string to_string() { return ""; }
-
     void on_retransmission_timeout();
+
+    void set_peer_recv_window(uint16_t peer_recv_window) { peer_recv_window_ = peer_recv_window; }
+    bool is_finished() { return state_ == state::FINISHED; }
+    std::string to_string() { return ""; }
 
 private:
     // send as many next-ready segments as our send window allows

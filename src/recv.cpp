@@ -40,7 +40,7 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
         payload_ptr += already_recveived;
     }
 
-    uint64_t free_space = free_space_bytes();
+    uint64_t free_space = get_num_free_space_bytes();
     if (payload_size > free_space) {
         Log(level::ERROR, std::format("insufficient free space for segment - {} > {}", payload_size, free_space));
         return -1;
@@ -105,7 +105,7 @@ int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
         return -1;
     }
 
-    uint64_t ready_to_read = ready_bytes();
+    uint64_t ready_to_read = get_num_ready_bytes();
     if (ready_to_read < n) {
         Log(level::ERROR, std::format("read() ready-to-read-bytes ({}) < n ({})", ready_to_read, n));
         return -1;
@@ -133,13 +133,18 @@ int64_t recv_stream::on_fin_recv(uint64_t fin) {
         Log(level::ERROR, "on_fin_recv() not in ESTABLISHED state - dropping");
         return -1;
     }
+    nxt_ += 1;
     fin_ = fin;
+    if (nxt_ != fin_) {
+        Log(level::ERROR, std::format("on_fin_recv() postcondition nxt {} == fin {} - doesn't hold, invalid", nxt_, fin_));
+        return -1;
+    }
     state_ = state::FINISHED;
 
     return 0;
 }
 
-uint64_t recv_stream::free_space_bytes() {
+uint64_t recv_stream::get_num_free_space_bytes() {
     // Bytes from furthest_pos -> rd_pos_, where furthest_pos is the 
     // buffer position of our furthest pending segment.
     //
@@ -173,7 +178,7 @@ uint64_t recv_stream::free_space_bytes() {
     return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;
 }
 
-uint64_t recv_stream::ready_bytes() {
+uint64_t recv_stream::get_num_ready_bytes() {
     uint64_t capacity = buffer_->capacity();
     return (((nxt_pos_ + capacity) - rd_pos_) % capacity);
 }

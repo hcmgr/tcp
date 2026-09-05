@@ -61,7 +61,8 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
 
 int64_t send_stream::on_ack_recv(uint64_t acknum) {
     if (state_ == state::FINISHED) {
-        return -1;
+        // silently drop any acks after send stream finished
+        return 0;
     }
 
     if (acknum < una_) {

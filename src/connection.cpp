@@ -121,12 +121,12 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
         return -1;
     }
 
-    uint64_t ready = recv_stream_->ready_bytes();
+    uint64_t ready = recv_stream_->get_num_ready_bytes();
     if (ready < n) {
         // block until enough bytes ready to read
         std::unique_lock<std::mutex> ul(pending_read_mtx_);
         pending_read_cv_.wait(ul, [&] {
-            uint64_t ready = recv_stream_->ready_bytes();
+            uint64_t ready = recv_stream_->get_num_ready_bytes();
             return ready < n;
         });
     }
@@ -184,24 +184,6 @@ int64_t connection::shutdown() {
     }
 
     return 0;
-}
-
-tcp_header connection::make_header(uint32_t seqnum, 
-                                   uint16_t flags,
-                                   uint8_t *payload_ptr,
-                                   uint64_t payload_len)
-{
-    tcp_header hdr;
-
-    hdr.src_port = addr_tuple_.src_port_;
-    hdr.dest_port = addr_tuple_.dest_port_;
-    hdr.seqnum = seqnum;
-    hdr.acknum = recv_stream_->nxt();
-    hdr.flags = flags;
-    hdr.window = recv_stream_->free_space_bytes();
-    hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
-
-    return hdr;
 }
 
 int64_t connection::send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len) {
@@ -268,24 +250,21 @@ void connection::on_recv_segment()
     //
     switch (state_) {
         case tcp_state::CLOSED: {
+            Log(level::ERROR, "in CLOSED state - received segment - invalid");
             goto fail;
         }
         break;
 
         case tcp_state::LISTEN: {
-            if (hdr.fin())
-                goto fail;
-            
-            if (hdr.syn() && !hdr.ack()) {
-                // syn received
-
+            // handshake syn received
+            if (hdr.syn() && !hdr.ack() && !hdr.fin()) {
                 // accept peer's iss
                 auto res = recv_stream_->on_syn_recv(hdr.seqnum);
                 if (res < 0) {
                     goto fail;
                 }
 
-                // send our iss + ack peer's iss (handshake syn-ack)
+                // send our iss + ack peer's iss (handshake syn-ack send)
                 res = send_syn_ack();
                 if (res < 0) {
                     goto fail;
@@ -294,33 +273,28 @@ void connection::on_recv_segment()
                 state_ = tcp_state::SYN_RECEIVED;
             }
             else {
-                return;
+                Log(level::ERROR, std::format("in LISTEN state - received something other than syn segment - invalid - {}", hdr.to_string()));
+                goto fail;
             }
         }
         break;
 
         case tcp_state::SYN_SENT: {
-            if (hdr.fin()) {
-                goto fail;
-            }
-            
-            if (hdr.syn() && hdr.ack()) {
-                // syn-ack received
-
+            // handshake syn-ack received
+            if (hdr.syn() && hdr.ack() && !hdr.fin()) {
                 // accept peer's iss
                 auto res = recv_stream_->on_syn_recv(hdr.seqnum);
                 if (res < 0) {
                     goto fail;
                 }
                 
-
                 // accept peer's ack of our iss
                 res = send_stream_->on_ack_recv(hdr.acknum);
                 if (res < 0) {
                     goto fail;
                 }
 
-                // ack peer's iss (handshake ack)
+                // ack peer's iss (handshake ack send)
                 res = send_ack();
                 if (res < 0) {
                     goto fail;
@@ -329,92 +303,65 @@ void connection::on_recv_segment()
                 state_ = tcp_state::ESTABLISHED;
             }
             else {
-                return;
+                Log(level::ERROR, std::format("in SYN_SENT state - received something other than syn-ack - invalid - {}", hdr.to_string()));
+                goto fail;
             }
         }
         break;
 
         case tcp_state::SYN_RECEIVED: {
-            if (hdr.fin()) {
-                goto fail;
-            }
-
-            if(!hdr.syn() && hdr.ack()) {
-                // ack received
+            // handshake ack received
+            if(!hdr.syn() && hdr.ack() && !hdr.fin()) {
                 state_ = tcp_state::ESTABLISHED;
             }
             else {
+                Log(level::ERROR, std::format("in SYN_RECEIVED state - received something other than ack - invalid - {}", hdr.to_string()));
                 goto fail;
             }
         }
         break;
 
         case tcp_state::ESTABLISHED: {
-            if (hdr.syn()) {
+            // process segment
+            auto res = process_segment_established(hdr, payload_ptr, payload_len);
+            if (res < 0) {
                 goto fail;
             }
 
-            // accept ack
-            if (hdr.ack()) {
-                auto res = send_stream_->on_ack_recv(hdr.acknum);
-                if (res < 0) {
-                    goto fail;
-                }
-            }
-
-            // accept segment payload
-            if (payload_len > 0) {
-                auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_len);
-                if (res < 0) {
-                    goto fail;
-                }
-            }
-
-            // accept fin - recv_stream will bump nxt (acknum) +1 so our acknum is correct
-            if (hdr.fin()) {
-                auto res = recv_stream_->on_fin_recv(hdr.seqnum + payload_len);
-                if (res < 0) {
-                    goto fail;
-                }
-            }
-
-            // ack newly received bytes
-            if (delayed_ack_timeout_->active) {
-                // delayed-ack queued - cancel it, and just send this one
-                delayed_ack_timeout_->clear();
-                auto res = send_ack();
-                if (res < 0) {
-                    goto fail;
-                }
-            } 
-            else {
-                // no current delayed-ack - queue one
-                auto res = delayed_ack_timeout_->add();
-                if (res < 0) {
-                    goto fail;
-                }
-            }
-
-            // state transition
-            if (hdr.fin()) {
+            if (recv_stream_->is_finished()) {
+                // received their fin - now wait to send our fin
                 state_ = tcp_state::CLOSE_WAIT;
             } else {
+                // continue as normal
                 state_ = tcp_state::ESTABLISHED;
             }
         }
         break;
 
         case tcp_state::FIN_WAIT_1: {
-            // seems mostly the same as ESTALISHED state
-            // difference:
-            //      - must validate our fin was properly ack'd
-            //          - add state machine to send_stream
-            //          - set our fin_ seqnum on send_fin()
-            //          - in on_ack_recv, if our fin has been acked, move into finished state
-            //      - state transition
-            //          - if received seg.fin -> goto CLOSING (simultaneous close)
-            //          - otherwise -> goto FIN_WAIT_2
-            //  
+            // process segment
+            auto res = process_segment_established(hdr, payload_ptr, payload_len);
+            if (res < 0) {
+                goto fail;
+            }
+
+            bool send_finished = send_stream_->is_finished();
+            bool recv_finished = recv_stream_->is_finished();
+            if (!send_finished && !recv_finished) {
+                // still waiting for their fin AND ack of our fin
+                state_ = tcp_state::FIN_WAIT_1;
+            }
+            else if (!send_finished && recv_finished) {
+                // still waiting for ack of our fin
+                state_ = tcp_state::CLOSING;
+            }
+            else if (send_finished && !recv_finished) {
+                // still waiting for their fin
+                state_ = tcp_state::FIN_WAIT_2;
+            } else {
+                // their fin received, our fin ack'd => close immediately
+                destroy();
+            }
         }
         break;
 
@@ -425,36 +372,63 @@ void connection::on_recv_segment()
         break;
 
         case tcp_state::FIN_WAIT_2: {
-            // seems mostly same as ESTABLISHED state
-            // difference:
-            //      - their acknum is useless to us now; our send_stream is finished
-            //      - state transition
-            //          - if received seg.fin -> goto TIME_WAIT
-            //          - otherwise -> stay in FIN_WAIT_2
+            bool recv_finished = recv_stream_->is_finished();
+            if (recv_finished) {
+                // have received their fin, and sent ack for it - enter time-wait
+                state_ = tcp_state::TIME_WAIT;
+            }
+            else {
+                // keep waiting for their fin
+                state_ = tcp_state::FIN_WAIT_2;
+            }
         }
         break;
 
         case tcp_state::TIME_WAIT: {
-            //
             // During TIME_WAIT state, we're waiting TIME_WAIT_MS to close.
             // If we receive a segment, it's cause our ack of their fin didn't
             // arrive, and they have re-tx'd it. All other cases are invalid.
-            //
+            if (!(hdr.fin() && !hdr.syn() && !hdr.ack())) {
+                Log(level::ERROR, std::format("in TIME_WAIT state - segment other than pure fin arrive - invalid - {}", hdr.to_string()));
+                goto fail;
+            }
 
-            // verify the implied fin number (seqnum + payload_len) is what we expect
-            
-            // send ack
+            // we've already received their fin - verify retx'd one == first one
+            uint64_t retx_fin = hdr.seqnum + payload_len;
+            uint64_t fin = recv_stream_->get_nxt();
+            if (retx_fin != fin) {
+                Log(level::ERROR, std::format("in TIME_WAIT STATE - re-tx'd fin {} != first fin {}", retx_fin, fin));
+                goto fail;
+            }
+
+            // Ack the fin. 
+            // Just send immediately, i.e. don't use a delayed-ack - we have
+            // no more acks after this, so not point buffering.
+            if (delayed_ack_timeout_->active) {
+                delayed_ack_timeout_->clear();
+                auto res = send_ack();
+                if (res < 0) {
+                    goto fail;
+                }
+            } 
+
+            state_ = tcp_state::TIME_WAIT;
         }
         break;
 
         case tcp_state::LAST_ACK: {
             // should be receiving peer's ack of our fin (nothing else)
-            if (!hdr.ack() || hdr.syn() || hdr.fin()) {
+            if (!(hdr.fin() && !hdr.syn() && !hdr.ack())) {
                 goto fail;
             }
 
             auto res = send_stream_->on_ack_recv(hdr.acknum);
             if (res < 0) {
+                goto fail;
+            }
+
+            if (!send_stream_->is_finished()) {
+                Log(level::ERROR, "in CLOSING state, yet peer didn't ack our fin - invalid");
                 goto fail;
             }
 
@@ -464,7 +438,7 @@ void connection::on_recv_segment()
     
         case tcp_state::CLOSING: {
             // should be receiving peer's ack of our fin (nothing else)
-            if (!hdr.ack() || hdr.syn() || hdr.fin()) {
+            if (!(hdr.fin() && !hdr.syn() && !hdr.ack())) {
                 goto fail;
             }
 
@@ -473,15 +447,19 @@ void connection::on_recv_segment()
                 goto fail;
             }
 
-            // todo - check send stream has finished
+            if (!send_stream_->is_finished()) {
+                Log(level::ERROR, "in CLOSING state, yet peer didn't ack our fin - invalid");
+                goto fail;
+            }
 
             state_ = tcp_state::TIME_WAIT;
-        } break;
+        } 
+        break;
 
         default: {
-            throw std::runtime_error("unknown tcp_state reached");
+            goto fail;
         }
-    }
+    };
     return;
 
 fail:
@@ -506,14 +484,6 @@ void connection::on_delayed_ack_timeout() {
     delayed_ack_timeout_->clear();
 }
 
-void connection::reset() {
-    // send rst
-    send_rst();
-
-    // teardown own connection immediately
-    destroy();
-}
-
 void connection::destroy() {
     // remove and free recv segment event
     event_free(recv_segment_ev_);
@@ -533,6 +503,97 @@ void connection::destroy() {
     // move to closed state, and notify manager we validly closed
     state_ = tcp_state::CLOSED;
     manager::get_instance().on_connection_destroy(id_);
+}
+
+void connection::reset() {
+    // send rst
+    send_rst();
+
+    // teardown own connection immediately
+    destroy();
+}
+
+tcp_header connection::make_header(uint32_t seqnum, 
+                                   uint16_t flags,
+                                   uint8_t *payload_ptr,
+                                   uint64_t payload_len)
+{
+    tcp_header hdr;
+
+    hdr.src_port = addr_tuple_.src_port_;
+    hdr.dest_port = addr_tuple_.dest_port_;
+    hdr.seqnum = seqnum;
+    hdr.acknum = recv_stream_->get_nxt();
+    hdr.flags = flags;
+    hdr.window = recv_stream_->get_num_free_space_bytes();
+    hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
+
+    return hdr;
+}
+
+int64_t connection::process_segment_established(tcp_header &hdr,
+                                                uint8_t *payload_ptr,
+                                                uint64_t payload_len) 
+{
+    if (hdr.syn()) {
+        return -1;
+    }
+
+    // accept ack
+    if (hdr.ack()) {
+        auto res = send_stream_->on_ack_recv(hdr.acknum);
+        if (res < 0) {
+            return -1;
+        }
+    }
+
+    // accept segment payload
+    uint64_t curr_acknum = recv_stream_->get_nxt();
+    if (payload_len > 0) {
+        auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_len);
+        if (res < 0) {
+            return -1;
+        }
+    }
+
+    // accept fin - recv_stream will bump acknum so our ack fires
+    if (hdr.fin()) {
+        auto res = recv_stream_->on_fin_recv(hdr.seqnum + payload_len);
+        if (res < 0) {
+            return -1;
+        }
+    }
+
+    // ack newly-received bytes
+    uint64_t new_acknum = recv_stream_->get_nxt();
+    if (new_acknum < curr_acknum) {
+        return -1;
+    } 
+    if (new_acknum > curr_acknum) {
+        //
+        // don't queue delayed-ack if:
+        //      a) this is our last ack (i.e. recv finished because peer sent fin), OR;
+        //      b) there's a delayed ack already active (just cancel it and send this one)
+        //
+        bool recv_finished = recv_stream_->is_finished();
+        bool should_delay_ack = !recv_finished && !delayed_ack_timeout_->active;
+        if (should_delay_ack) {
+            auto res = delayed_ack_timeout_->add();
+            if (res < 0) {
+                return -1;
+            }
+        }
+        else {
+            // cancel current one (if any)
+            delayed_ack_timeout_->clear();
+            auto res = send_ack();
+            if (res < 0) {
+                return -1;
+            }
+        }
+    }
+
+    return 0;
 }
 
 //

@@ -96,6 +96,8 @@ private:
     void reset();
     tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
+    int64_t process_segment_established(tcp_header &hdr, uint8_t *payload_ptr, uint64_t payload_len);
+
     // header-only sends
     int64_t send_syn();
     int64_t send_syn_ack();
