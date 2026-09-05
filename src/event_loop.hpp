@@ -34,6 +34,21 @@ inline void libevent_on_delayed_ack_timeout(evutil_socket_t fd, short events, vo
     conn->on_delayed_ack_timeout();
 }
 
+inline void libevent_on_time_wait_timeout(evutil_socket_t fd, short events, void* arg) {
+    if (!(events & EV_TIMEOUT)) {
+        Log(level::ERROR, "EV_TIMEOUT not triggered");
+        return;
+    }
+
+    connection *conn = (connection*)arg;
+    if (conn == nullptr) {
+        Log(level::ERROR, "connection null");
+        return;
+    }
+
+    conn->on();
+}
+
 inline void libevent_on_retransmission_timeout(evutil_socket_t fd, short events, void* arg) {
     if (!(events & EV_TIMEOUT)) {
         Log(level::ERROR, "EV_TIMEOUT not triggered");

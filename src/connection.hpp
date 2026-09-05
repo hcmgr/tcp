@@ -43,6 +43,7 @@ private:
     struct event *recv_segment_ev_;
 
     std::unique_ptr<timeout_handler> delayed_ack_timeout_;
+    std::unique_ptr<timeout_handler> time_wait_timeout_;
 
     std::mutex pending_open_mtx_;
     std::condition_variable pending_open_cv_;
@@ -55,7 +56,6 @@ private:
 
 public:
     connection(uint64_t id, const addr_tuple &addr_tuple);
-
     ~connection();
 
 public:
@@ -84,6 +84,11 @@ public:
     // Callback from event loop on trigger of delayed-ack timeout
     //
     void on_delayed_ack_timeout();
+
+    //
+    // Callback from event loop on trigger of time-wait timeout
+    //
+    void on_time_wait_timeout();
 
 public:
     uint64_t get_id() { return id_; }

@@ -60,10 +60,13 @@ int64_t connection::open(const conn_type &conn_type) {
         recv_stream_ = std::make_unique<recv_stream>(RECV_BUFFER_CAPACITY);
     }
 
-    // create delayed ack timeout handler
     delayed_ack_timeout_ = std::make_unique<timeout_handler>(
         DELAYED_ACK_TIMEOUT_MS,
         libevent_on_delayed_ack_timeout,
+        this);
+    time_wait_timeout_ = std::make_unique<timeout_handler>(
+        TIME_WAIT_TIMEOUT_MS,
+        libevent_on_time_wait_timeout,
         this);
 
     // initialise connection as either connect or listen
@@ -264,7 +267,7 @@ void connection::on_recv_segment()
                     goto fail;
                 }
 
-                // send our iss + ack peer's iss (handshake syn-ack send)
+                // send our iss + ack peer's iss (handshake syn-ack)
                 res = send_syn_ack();
                 if (res < 0) {
                     goto fail;
@@ -294,7 +297,7 @@ void connection::on_recv_segment()
                     goto fail;
                 }
 
-                // ack peer's iss (handshake ack send)
+                // ack peer's iss (handshake ack)
                 res = send_ack();
                 if (res < 0) {
                     goto fail;
@@ -331,7 +334,8 @@ void connection::on_recv_segment()
             if (recv_stream_->is_finished()) {
                 // received their fin - now wait to send our fin
                 state_ = tcp_state::CLOSE_WAIT;
-            } else {
+            } 
+            else {
                 // continue as normal
                 state_ = tcp_state::ESTABLISHED;
             }
@@ -375,6 +379,11 @@ void connection::on_recv_segment()
             bool recv_finished = recv_stream_->is_finished();
             if (recv_finished) {
                 // have received their fin, and sent ack for it - enter time-wait
+                if (time_wait_timeout_->active) {
+                    Log(level::ERROR, "in FIN_WAIT_2 state - recv finished ==> enter time-wait, yet time-wait timeout active - invalid");
+                    goto fail;
+                }
+                time_wait_timeout_->add();
                 state_ = tcp_state::TIME_WAIT;
             }
             else {
@@ -403,7 +412,7 @@ void connection::on_recv_segment()
 
             // Ack the fin. 
             // Just send immediately, i.e. don't use a delayed-ack - we have
-            // no more acks after this, so not point buffering.
+            // no more acks after this, so no point buffering.
             if (delayed_ack_timeout_->active) {
                 delayed_ack_timeout_->clear();
                 auto res = send_ack();
@@ -452,6 +461,11 @@ void connection::on_recv_segment()
                 goto fail;
             }
 
+            if (time_wait_timeout_->active) {
+                Log(level::ERROR, "in FIN_WAIT_2 state - recv finished ==> enter time-wait, yet time-wait timeout active - invalid");
+                goto fail;
+            }
+            time_wait_timeout_->add();
             state_ = tcp_state::TIME_WAIT;
         } 
         break;
@@ -482,6 +496,18 @@ void connection::on_delayed_ack_timeout() {
     }
 
     delayed_ack_timeout_->clear();
+}
+
+void connection::on_time_wait_timeout() {
+    if (!time_wait_timeout_->active) {
+        Log(level::ERROR, "time-wait-timeout triggered whilst its inactive");
+        reset();
+        return;
+    }
+    time_wait_timeout_->clear();
+
+    // can now safely shutdown connection
+    destroy();
 }
 
 void connection::destroy() {
@@ -584,7 +610,6 @@ int64_t connection::process_segment_established(tcp_header &hdr,
             }
         }
         else {
-            // cancel current one (if any)
             delayed_ack_timeout_->clear();
             auto res = send_ack();
             if (res < 0) {

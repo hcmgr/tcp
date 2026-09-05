@@ -18,7 +18,7 @@
 // general
 #define MSS                         1460
 #define DELAYED_ACK_TIMEOUT_MS      40
-#define TIME_WAIT_MS        60*1000 // 60 seconds
+#define TIME_WAIT_TIMEOUT_MS        60*1000 // 60 seconds
 
 enum class tcp_state {
     CLOSED,                 // closed
