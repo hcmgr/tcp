@@ -1,5 +1,6 @@
 #include <deque>
 #include <memory>
+#include <sstream>
 
 #include "buffer.hpp"
 #include "define.hpp"
@@ -34,7 +35,7 @@ private:
         FINISHED
     };
     state state_;
-    
+
 public:
     recv_stream(uint64_t capacity);
     ~recv_stream();
@@ -57,8 +58,17 @@ public:
 
     bool is_finished() { return state_ == state::FINISHED; }
 
-    std::string to_string() {}
+    std::string to_string();
 
 private:
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
+
+    static std::string to_string(state s) {
+        switch (s) {
+            case state::SYN_WAITING: return "SYN_WAITING";
+            case state::ESTABLISHED: return "ESTABLISHED";
+            case state::FINISHED:    return "FINISHED";
+        }
+        return "UNKNOWN";
+    }
 };

@@ -46,6 +46,7 @@ inline std::string to_string(tcp_state state) {
         case tcp_state::FIN_WAIT_2:   return "FIN_WAIT_2";
         case tcp_state::TIME_WAIT:    return "TIME_WAIT";
         case tcp_state::LAST_ACK:     return "LAST_ACK";
+        case tcp_state::CLOSING:      return "CLOSING";
     }
     return "UNKNOWN";
 }
@@ -74,7 +75,13 @@ struct __attribute__((packed)) tcp_header {
     bool ack() { return flags & ack_mask; }
 
     std::string to_string() {
-        return "";
+        std::string s = "seqnum=" + std::to_string(seqnum) + " acknum=" + std::to_string(acknum) + " flags=[";
+        if (syn()) s += "SYN,";
+        if (ack()) s += "ACK,";
+        if (fin()) s += "FIN,";
+        if (rst()) s += "RST,";
+        s += "] window=" + std::to_string(window);
+        return s;
     }
 };
 

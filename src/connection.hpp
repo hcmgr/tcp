@@ -24,7 +24,9 @@ struct addr_tuple {
                dest_port_ == other.dest_port_;
     }
 
-    std::string to_string() const;
+    std::string to_string() const {
+        return src_ip_ + ":" + std::to_string(src_port_) + " -> " + dest_ip_ + ":" + std::to_string(dest_port_);
+    }
 };
 
 class connection {
@@ -65,12 +67,12 @@ public:
     int64_t open(const conn_type &conn_type);
     int64_t read(uint64_t n, uint8_t *dest_buffer);
     int64_t write(uint64_t n, uint8_t *src_buffer);
-    int64_t shutdown();
+    int64_t close();
 
 public:
     //
     // Send segment to peer with given seqnum, flags, and optionally a payload.
-    // Called by send_stream, as it decides when to send segments.
+    // Called by send_stream, as it primarily decides when to send segments.
     //
     int64_t send_segment(uint64_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
@@ -90,12 +92,15 @@ public:
     //
     void on_time_wait_timeout();
 
+    //
+    // Fully teardown connection - move into CLOSED state, any references can be dropped
+    //
+    void destroy();
+
 public:
     uint64_t get_id() { return id_; }
     addr_tuple get_addr_tuple() { return addr_tuple_; }
     tcp_state get_state() { return state_; }
-
-    void destroy();
 
 private:
     void reset();

@@ -131,12 +131,12 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // check if peer has ack'd our fin
     if (una_ > fin_) {
-        Log(level::ERROR, std::format("una ({}) > fin ({}), i.e. peer ack'd beyond fin"));
+        Log(level::ERROR, std::format("una ({}) > fin ({}), i.e. peer ack'd beyond fin", una_, fin_));
         return -1;
     }
     if (una_ == fin_) {
         if (state_ != state::FIN_SENT) {
-            Log(level::ERROR, std::format("peer ack'd our fin, yet not in FIN_SENT state - state=={}", state_));
+            Log(level::ERROR, std::format("peer ack'd our fin, yet not in FIN_SENT state - state=={}", to_string(state_)));
             return -1;
         }
         if (!(una_ == nxt_ && in_flight_segments_.empty())) {
@@ -234,6 +234,24 @@ void send_stream::on_retransmission_timeout() {
 
     retransmission_timeout_->restart();
     cong_->on_rto();
+}
+
+std::string send_stream::to_string() {
+    std::ostringstream oss;
+    oss << "send_stream" << "\n";
+    oss << logging::divider << "\n";
+    oss << "state: " << to_string(state_) << "\n";
+    oss << "iss: " << iss_ << "\n"
+        << "una: " << una_ << "\n"
+        << "nxt: " << nxt_ << "\n"
+        << "fin: " << fin_ << "\n";
+    oss << "num in-flight segments: " << in_flight_segments_.size();
+    oss << "last acks: " << dup_ack_.last_acks[0] << " " << dup_ack_.last_acks[1] << "\n";
+    oss << "rto: " << (retransmission_timeout_->active ? "active" : "inactive") << "\n";
+    oss << "peer recv window: " << peer_recv_window_ << "\n";
+    oss << "cong window: " << cong_->get_cwnd() << "\n";
+    oss << logging::divider << "\n";
+    return oss.str();
 }
 
 int64_t send_stream::send_ready_bytes() {

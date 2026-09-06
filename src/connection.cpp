@@ -124,9 +124,9 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
         return -1;
     }
 
+    // block until enough bytes ready to read
     uint64_t ready = recv_stream_->get_num_ready_bytes();
     if (ready < n) {
-        // block until enough bytes ready to read
         std::unique_lock<std::mutex> ul(pending_read_mtx_);
         pending_read_cv_.wait(ul, [&] {
             uint64_t ready = recv_stream_->get_num_ready_bytes();
@@ -134,6 +134,7 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
         });
     }
 
+    // read bytes
     int64_t bytes_read = recv_stream_->read(n, dest_buffer);
     if (bytes_read != n) {
         Log(level::ERROR, std::format("{} bytes ready, but only {} bytes actually read", ready, bytes_read));
@@ -155,6 +156,8 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
         return -1;
     }
 
+    // todo - do we need to block here?
+
     int64_t bytes_written = send_stream_->write(n, src_buffer);
     if (bytes_written < 0) {
         Log(level::ERROR, "write() error");
@@ -163,7 +166,7 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
     return bytes_written;
 }
 
-int64_t connection::shutdown() {
+int64_t connection::close() {
     if (!(state_ == tcp_state::ESTABLISHED || state_ == tcp_state::CLOSE_WAIT)) {
         Log(level::ERROR, std::format("close() in invalid state - {}", to_string(state_)));
         reset();
@@ -183,7 +186,7 @@ int64_t connection::shutdown() {
         state_ = tcp_state::LAST_ACK;
     } 
     else {
-        throw std::runtime_error(std::format("close() - unreachable state - {}", state_));
+        throw std::runtime_error(std::format("close() - unreachable state - {}", to_string(state_)));
     }
 
     return 0;
@@ -516,7 +519,7 @@ void connection::destroy() {
     recv_segment_ev_ = nullptr;
 
     // close udp socket
-    auto res = close(udp_socket_fd_);
+    auto res = ::close(udp_socket_fd_);
     if (res < 0) {
         // not much else we can do here, as we're CURRENTLY destroying - sucks to suck
         throw std::runtime_error(std::format("error closing udp socket fd - {}", strerror(errno)));

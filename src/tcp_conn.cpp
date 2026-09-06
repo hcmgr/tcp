@@ -30,5 +30,5 @@ int64_t tcp_conn::write(uint64_t n, uint8_t *src_buffer) {
 }
 
 int64_t tcp_conn::close() {
-    return conn_->shutdown();
+    return conn_->close();
 }

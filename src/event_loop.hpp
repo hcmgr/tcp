@@ -46,7 +46,7 @@ inline void libevent_on_time_wait_timeout(evutil_socket_t fd, short events, void
         return;
     }
 
-    conn->on();
+    conn->on_time_wait_timeout();
 }
 
 inline void libevent_on_retransmission_timeout(evutil_socket_t fd, short events, void* arg) {

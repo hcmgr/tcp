@@ -38,6 +38,8 @@ enum class level {
 
 namespace logging {
     void log_impl(level level, const char *file, int line, const std::string &message);
+
+    static const std::string divider = "-------------------------------";
 };
 
 //////////////////////////////////////////////////////////////////

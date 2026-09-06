@@ -144,6 +144,11 @@ int64_t recv_stream::on_fin_recv(uint64_t fin) {
     return 0;
 }
 
+uint64_t recv_stream::get_num_ready_bytes() {
+    uint64_t capacity = buffer_->capacity();
+    return (((nxt_pos_ + capacity) - rd_pos_) % capacity);
+}
+
 uint64_t recv_stream::get_num_free_space_bytes() {
     // Bytes from furthest_pos -> rd_pos_, where furthest_pos is the 
     // buffer position of our furthest pending segment.
@@ -178,7 +183,15 @@ uint64_t recv_stream::get_num_free_space_bytes() {
     return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;
 }
 
-uint64_t recv_stream::get_num_ready_bytes() {
-    uint64_t capacity = buffer_->capacity();
-    return (((nxt_pos_ + capacity) - rd_pos_) % capacity);
+std::string recv_stream::to_string() {
+    std::ostringstream oss;
+    oss << "recv_stream" << "\n";
+    oss << logging::divider << "\n";
+    oss << "state: " << to_string(state_) << "\n";
+    oss << "irs: " << irs_ << "\n"
+        << "nxt: " << nxt_ << "\n"
+        << "fin: " << fin_ << "\n";
+    oss << "num pending segments: " << pending_segments_.size() << "\n";
+    oss << logging::divider << "\n";
+    return oss.str();
 }

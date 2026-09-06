@@ -3,6 +3,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <sstream>
 
 #include <event2/event.h>
 
@@ -88,7 +89,8 @@ public:
 
     void set_peer_recv_window(uint16_t peer_recv_window) { peer_recv_window_ = peer_recv_window; }
     bool is_finished() { return state_ == state::FINISHED; }
-    std::string to_string() { return ""; }
+
+    std::string to_string();
 
 private:
     // send as many next-ready segments as our send window allows
@@ -104,4 +106,14 @@ private:
 
     // increment circ-buffer position `pos` by `n`
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
+
+    static std::string to_string(state s) {
+        switch (s) {
+            case state::ESTABLISHED: return "ESTABLISHED";
+            case state::FIN_PENDING: return "FIN_PENDING";
+            case state::FIN_SENT:    return "FIN_SENT";
+            case state::FINISHED:    return "FINISHED";
+        }
+        return "UNKNOWN";
+    }
 };
