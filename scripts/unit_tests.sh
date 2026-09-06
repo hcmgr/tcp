@@ -1,3 +1,3 @@
 cd build
 make
-./normal_epoll
+./unit_tests

@@ -54,7 +54,7 @@ public:
 public:
     uint64_t get_num_ready_bytes();
     uint64_t get_num_free_space_bytes();
-    uint64_t get_nxt() { return nxt_; }
+    uint64_t get_acknum() { return nxt_; }
 
     bool is_finished() { return state_ == state::FINISHED; }
 

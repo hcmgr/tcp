@@ -29,6 +29,8 @@ public:
     ring_buffer &operator=(const ring_buffer&) = delete;
 
     void read(uint64_t pos, uint8_t *dest, uint64_t n) const {
+        if (n == 0) return;
+        if (dest == nullptr) return;
         uint64_t first = std::min(n, capacity_ - pos);
         std::memcpy(dest, buffer_ + pos, first);
         if (first < n) {

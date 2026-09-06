@@ -113,7 +113,6 @@ fail:
 
 int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
     if (n == 0) return 0;
-
     if (dest_buffer == nullptr) {
         Log(level::ERROR, "read() dest_buffer ptr is null");
         return -1;
@@ -136,8 +135,7 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
 
     // read bytes
     int64_t bytes_read = recv_stream_->read(n, dest_buffer);
-    if (bytes_read != n) {
-        Log(level::ERROR, std::format("{} bytes ready, but only {} bytes actually read", ready, bytes_read));
+    if (bytes_read < 0) {
         return -1;
     }
     return bytes_read;
@@ -423,7 +421,7 @@ void connection::on_recv_segment()
 
             // we've already received their fin - verify retx'd one == first one
             uint64_t retx_fin = hdr.seqnum + payload_len;
-            uint64_t fin = recv_stream_->get_nxt();
+            uint64_t fin = recv_stream_->get_acknum();
             if (retx_fin != fin) {
                 Log(level::ERROR, std::format("in TIME_WAIT STATE - re-tx'd fin {} != first fin {}", retx_fin, fin));
                 goto fail;
@@ -568,7 +566,7 @@ tcp_header connection::make_header(uint32_t seqnum,
     hdr.src_port = addr_tuple_.src_port_;
     hdr.dest_port = addr_tuple_.dest_port_;
     hdr.seqnum = seqnum;
-    hdr.acknum = recv_stream_->get_nxt();
+    hdr.acknum = recv_stream_->get_acknum();
     hdr.flags = flags;
     hdr.window = recv_stream_->get_num_free_space_bytes();
     hdr.checksum = net::tcp_checksum_calc(hdr, payload_ptr, payload_len);
@@ -593,7 +591,7 @@ int64_t connection::process_segment_established(tcp_header &hdr,
     }
 
     // accept segment payload
-    uint64_t curr_acknum = recv_stream_->get_nxt();
+    uint64_t curr_acknum = recv_stream_->get_acknum();
     if (payload_len > 0) {
         auto res = recv_stream_->recv_segment(hdr.seqnum, payload_ptr, payload_len);
         if (res < 0) {
@@ -610,7 +608,7 @@ int64_t connection::process_segment_established(tcp_header &hdr,
     }
 
     // ack newly-received bytes
-    uint64_t new_acknum = recv_stream_->get_nxt();
+    uint64_t new_acknum = recv_stream_->get_acknum();
     if (new_acknum < curr_acknum) {
         return -1;
     } 

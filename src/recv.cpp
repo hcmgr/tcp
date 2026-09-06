@@ -1,4 +1,5 @@
 #include <format>
+#include <iostream>
 
 #include "recv.hpp"
 #include "utils.hpp"
@@ -18,7 +19,7 @@ recv_stream::recv_stream(uint64_t capacity) {
 }
 
 recv_stream::~recv_stream() {
-    pending_segments_.clear();
+    // RAII cleans everything up
 }
 
 int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_t payload_size) {
@@ -93,22 +94,24 @@ int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_
         }
     }
 
-    return seg.payload_len;
+    return 0;
 }
 
 int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
-    if (n == 0) {
-        return 0;
-    }
+    if (n == 0) return 0;
     if (dest_buffer == nullptr) {
         Log(level::ERROR, "read() dest_buffer == nullptr");
         return -1;
     }
 
     uint64_t ready_to_read = get_num_ready_bytes();
+    if (ready_to_read <= 0) {
+        return 0;
+    }
+
     if (ready_to_read < n) {
-        Log(level::ERROR, std::format("read() ready-to-read-bytes ({}) < n ({})", ready_to_read, n));
-        return -1;
+        Log(level::INFO, std::format("read() - ready-bytes ({}) < n ({}), clipping n", ready_to_read, n));
+        n = ready_to_read;
     }
     
     buffer_->read(rd_pos_, dest_buffer, n);
@@ -180,7 +183,7 @@ uint64_t recv_stream::get_num_free_space_bytes() {
         furthest_pos = inc(furthest_pos, ((back.seqnum + back.payload_len) - nxt_));
     }
     uint64_t capacity = buffer_->capacity();
-    return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;
+    return ((rd_pos_ + capacity) - (furthest_pos + 1)) % capacity;
 }
 
 std::string recv_stream::to_string(state s) {

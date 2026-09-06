@@ -4,163 +4,234 @@
 
 #include "../src/recv.hpp"
 
-namespace {
-constexpr uint64_t TEST_CAPACITY = 64;
+static const uint64_t TEST_CAPACITY = 64;
 
-std::string read_n(recv_stream &rs, uint64_t n) {
+static std::string read_n(recv_stream &rs, uint64_t n) {
     std::string out(n, '\0');
     int64_t rc = rs.read(n, (uint8_t*)out.data());
     EXPECT_EQ(rc, (int64_t)n);
     return out;
 }
-}
 
-//
-// on_syn() -> contiguous recv_segment() calls -> on_fin()
-//
-TEST(RecvStreamTest, SynContiguousSegmentsThenFin) {
+TEST(recv_stream_test, contiguous_segments) {
     recv_stream rs(TEST_CAPACITY);
-
     uint64_t irs = 100;
-    rs.on_syn_recv(irs);
+    uint64_t seqnum;
+    int64_t res;
 
-    std::string a = "hello";
-    std::string b = "world";
-    std::string c = "!";
+    // syn
+    res = rs.on_syn_recv(irs);
+    EXPECT_EQ(res, 0);
 
-    uint64_t seq_a = irs + 1;
-    uint64_t seq_b = seq_a + a.size();
-    uint64_t seq_c = seq_b + b.size();
+    // recv segment
+    seqnum = irs + 1;
+    std::string seg1 = "hello";
+    res = rs.recv_segment(seqnum, (uint8_t*)seg1.c_str(), seg1.size());
+    EXPECT_EQ(res, 0);
+    seqnum += seg1.size();
 
-    EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), (int64_t)a.size());
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
+    EXPECT_EQ(rs.get_acknum(), seqnum);
+    EXPECT_EQ(rs.get_num_ready_bytes(), seg1.size());
+    EXPECT_FALSE(rs.is_finished());
 
-    EXPECT_EQ(rs.recv_segment(seq_b, (uint8_t*)b.data(), b.size()), (int64_t)b.size());
-    EXPECT_EQ(rs.recv_segment(seq_c, (uint8_t*)c.data(), c.size()), (int64_t)c.size());
+    // recv another segment
+    std::string seg2 = "world";
+    res = rs.recv_segment(seqnum, (uint8_t*)seg2.c_str(), seg2.size());
+    EXPECT_EQ(res, 0);
+    seqnum += seg2.size();
 
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
-    EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
+    EXPECT_EQ(rs.get_acknum(), seqnum);
+    EXPECT_EQ(rs.get_num_ready_bytes(), seg1.size() + seg2.size());
+    EXPECT_LT(rs.get_num_free_space_bytes(), TEST_CAPACITY - 1);
+    EXPECT_FALSE(rs.is_finished());
 
-    uint64_t fin = seq_c + c.size();
-    rs.on_fin_recv(fin);
+    // read all avail bytes
+    std::string out = read_n(rs, seg1.size() + seg2.size());
+    EXPECT_EQ(out, seg1 + seg2);
 
-    // stream is torn down - further segments are dropped
-    std::string late = "late";
-    EXPECT_EQ(rs.recv_segment(fin, (uint8_t*)late.data(), late.size()), -1);
+    EXPECT_EQ(rs.get_acknum(), seqnum); // hasn't moved as a result of read()
+    EXPECT_EQ(rs.get_num_ready_bytes(), 0); // all bytes consumed
+    EXPECT_EQ(rs.get_num_free_space_bytes(), TEST_CAPACITY - 1); // all spots free'd
+    EXPECT_FALSE(rs.is_finished());
+
+    // recv another segment
+    std::string seg3 = "foobar";
+    res = rs.recv_segment(seqnum, (uint8_t*)seg3.c_str(), seg3.size());
+    EXPECT_EQ(res, 0);
+    seqnum += seg3.size();
+
+    EXPECT_EQ(rs.get_acknum(), seqnum);
+    EXPECT_EQ(rs.get_num_ready_bytes(), seg3.size());
+
+    // read some (not all) avail bytes
+    uint64_t partial_n = 3;
+    std::string part1 = read_n(rs, partial_n);
+    EXPECT_EQ(part1, seg3.substr(0, partial_n));
+    EXPECT_EQ(rs.get_acknum(), seqnum); // hasn't moved as a result of read()
+    EXPECT_EQ(rs.get_num_ready_bytes(), seg3.size() - partial_n);
+
+    // read rest avail bytes
+    std::string part2 = read_n(rs, seg3.size() - partial_n);
+    EXPECT_EQ(part2, seg3.substr(partial_n));
+    EXPECT_EQ(rs.get_num_ready_bytes(), 0);
+    EXPECT_EQ(rs.get_num_free_space_bytes(), TEST_CAPACITY - 1);
+
+    // finish
+    seqnum += 1; // fin consumes 1 seqnum
+    res = rs.on_fin_recv(seqnum);
+    EXPECT_TRUE(rs.is_finished());
 }
 
-//
-// on_syn() -> out-of-order recv_segment() calls -> on_fin()
-//
-TEST(RecvStreamTest, SynOutOfOrderSegmentsThenFin) {
+TEST(recv_stream_test, out_of_order_segments) {
     recv_stream rs(TEST_CAPACITY);
+    uint64_t irs = 100;
+    int64_t res;
 
-    uint64_t irs = 0;
-    rs.on_syn_recv(irs);
+    res = rs.on_syn_recv(irs);
+    EXPECT_EQ(res, 0);
 
-    std::string a = "AAAA";
-    std::string b = "BBBB";
-    std::string c = "CCCC";
+    std::string seg1 = "hello";
+    std::string seg2 = "world";
+    uint64_t seg1_seq = irs + 1;
+    uint64_t seg2_seq = seg1_seq + seg1.size();
 
-    uint64_t seq_a = irs + 1;
-    uint64_t seq_b = seq_a + a.size();
-    uint64_t seq_c = seq_b + b.size();
+    // recv second segment first - non-contiguous, should not advance nxt
+    res = rs.recv_segment(seg2_seq, (uint8_t*)seg2.c_str(), seg2.size());
+    EXPECT_EQ(res, 0);
 
-    // deliver out-of-order: C, then A, then B
-    EXPECT_EQ(rs.recv_segment(seq_c, (uint8_t*)c.data(), c.size()), (int64_t)c.size());
-    // nothing contiguous with nxt_ yet - not ready to read
+    EXPECT_EQ(rs.get_acknum(), seg1_seq);
     EXPECT_EQ(rs.get_num_ready_bytes(), 0);
 
-    EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), (int64_t)a.size());
-    // only A is contiguous with nxt_ - B/C still pending
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
+    // recv first segment - should now advance nxt past both segments
+    res = rs.recv_segment(seg1_seq, (uint8_t*)seg1.c_str(), seg1.size());
+    EXPECT_EQ(res, 0);
 
-    EXPECT_EQ(rs.recv_segment(seq_b, (uint8_t*)b.data(), b.size()), (int64_t)b.size());
-    // B arriving closes the gap, so B and the earlier C both become readable
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + b.size() + c.size()));
+    EXPECT_EQ(rs.get_acknum(), seg2_seq + seg2.size());
+    EXPECT_EQ(rs.get_num_ready_bytes(), seg1.size() + seg2.size());
 
-    EXPECT_EQ(read_n(rs, a.size() + b.size() + c.size()), a + b + c);
-
-    uint64_t fin = seq_c + c.size();
-    rs.on_fin_recv(fin);
-    std::string late = "x";
-    EXPECT_EQ(rs.recv_segment(fin, (uint8_t*)late.data(), late.size()), -1);
+    // verify combined bytes are readable and correctly ordered
+    std::string out = read_n(rs, seg1.size() + seg2.size());
+    EXPECT_EQ(out, seg1 + seg2);
 }
 
-//
-// duplicate / overlapping segments are trimmed or dropped rather than corrupting the stream
-//
-TEST(RecvStreamTest, DuplicateAndOverlappingSegmentsAreTrimmed) {
+TEST(recv_stream_test, capacity_and_wraparound) {
     recv_stream rs(TEST_CAPACITY);
+    uint64_t irs = 100;
+    int64_t res;
 
-    uint64_t irs = 0;
-    rs.on_syn_recv(irs);
+    res = rs.on_syn_recv(irs);
+    EXPECT_EQ(res, 0);
 
-    std::string a = "0123456789";
-    uint64_t seq_a = irs + 1;
-    EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), (int64_t)a.size());
+    // fill recv buffer to capacity (TEST_CAPACITY - 1 usable bytes)
+    uint64_t fill_size = TEST_CAPACITY - 1;
+    std::string filler(fill_size, 'x');
+    uint64_t seqnum = irs + 1;
+    res = rs.recv_segment(seqnum, (uint8_t*)filler.c_str(), filler.size());
+    EXPECT_EQ(res, 0);
+    seqnum += filler.size();
 
-    // fully-duplicate retransmit of A - silently dropped, no change
-    EXPECT_EQ(rs.recv_segment(seq_a, (uint8_t*)a.data(), a.size()), 0);
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)a.size());
+    EXPECT_EQ(rs.get_num_free_space_bytes(), 0);
 
-    // partial overlap with already-received bytes - only the new tail is taken
-    std::string overlap_tail = "6789XY";
-    uint64_t seq_overlap = seq_a + 6; // bytes irs+7..irs+10 already received
-    EXPECT_EQ(rs.recv_segment(seq_overlap, (uint8_t*)overlap_tail.data(), overlap_tail.size()), 2); // only "XY" is new
-    EXPECT_EQ(rs.get_num_ready_bytes(), (int64_t)(a.size() + 2));
-    EXPECT_EQ(read_n(rs, a.size() + 2), a + "XY");
-}
+    // no free space left - further recv_segment should be rejected
+    uint8_t extra = 'y';
+    res = rs.recv_segment(seqnum, &extra, 1);
+    EXPECT_EQ(res, -1);
 
-//
-// ring-buffer wraparound: repeated write/read cycles must exceed capacity without corrupting data
-//
-TEST(RecvStreamTest, BufferWrapsAroundAcrossMultipleCycles) {
-    recv_stream rs(TEST_CAPACITY);
+    // drain buffer, confirming full capacity is freed again
+    std::string drained = read_n(rs, fill_size);
+    EXPECT_EQ(drained, filler);
+    EXPECT_EQ(rs.get_num_free_space_bytes(), TEST_CAPACITY - 1);
 
-    uint64_t irs = 0;
-    rs.on_syn_recv(irs);
+    // many recv+read cycles so physical buffer positions wrap around multiple times
+    for (int i = 0; i < 5; i++) {
+        std::string chunk(20, (char)('a' + i));
+        res = rs.recv_segment(seqnum, (uint8_t*)chunk.c_str(), chunk.size());
+        EXPECT_EQ(res, 0);
+        seqnum += chunk.size();
 
-    uint64_t seq = irs + 1;
-    for (int i = 0; i < 10; i++) {
-        std::string chunk = std::to_string(i) + "-chunk"; // ~8 bytes, forces several wraps over TEST_CAPACITY=64
-
-        ASSERT_EQ(rs.recv_segment(seq, (uint8_t*)chunk.data(), chunk.size()), (int64_t)chunk.size());
-        ASSERT_EQ(rs.get_num_ready_bytes(), (int64_t)chunk.size());
-        EXPECT_EQ(read_n(rs, chunk.size()), chunk);
-
-        seq += chunk.size();
+        std::string out = read_n(rs, chunk.size());
+        EXPECT_EQ(out, chunk);
     }
-
-    EXPECT_EQ(rs.get_num_ready_bytes(), 0);
 }
 
-//
-// state guards: recv_segment()/on_fin() outside of ESTABLISHED are safely dropped
-//
-TEST(RecvStreamTest, StateGuardsRejectCallsOutsideEstablished) {
+TEST(recv_stream_test, abnormal_recvs) {
     recv_stream rs(TEST_CAPACITY);
+    uint64_t irs = 100;
+    int64_t res;
 
-    // recv_segment() before on_syn() - still SYN_WAITING
-    std::string early = "nope";
-    EXPECT_EQ(rs.recv_segment(0, (uint8_t*)early.data(), early.size()), -1);
+    res = rs.on_syn_recv(irs);
+    EXPECT_EQ(res, 0);
 
-    // on_fin() before on_syn() - dropped, does not disturb SYN_WAITING
-    rs.on_fin_recv(123);
+    std::string seg1 = "hello";
+    uint64_t seg1_seq = irs + 1;
+    res = rs.recv_segment(seg1_seq, (uint8_t*)seg1.c_str(), seg1.size());
+    EXPECT_EQ(res, 0);
 
-    // on_syn() should still succeed since the bogus on_fin() above had no effect
-    uint64_t irs = 5;
-    rs.on_syn_recv(irs);
+    uint64_t acknum_after_seg1 = rs.get_acknum();
+    uint64_t ready_after_seg1 = rs.get_num_ready_bytes();
 
-    std::string data = "ok";
-    uint64_t seq = irs + 1;
-    EXPECT_EQ(rs.recv_segment(seq, (uint8_t*)data.data(), data.size()), (int64_t)data.size());
-    EXPECT_EQ(read_n(rs, data.size()), data);
+    // segment already fully received - silent drop, no state change
+    res = rs.recv_segment(seg1_seq, (uint8_t*)seg1.c_str(), seg1.size());
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(rs.get_acknum(), acknum_after_seg1);
+    EXPECT_EQ(rs.get_num_ready_bytes(), ready_after_seg1);
 
-    uint64_t fin = seq + data.size();
-    rs.on_fin_recv(fin);
+    // segment already partially received - only new trailing bytes should be taken
+    std::string overlap_seg = "lodog"; // last 2 bytes of "hello" ("lo") plus new "dog"
+    uint64_t overlap_seq = seg1_seq + 3;
+    res = rs.recv_segment(overlap_seq, (uint8_t*)overlap_seg.c_str(), overlap_seg.size());
+    EXPECT_EQ(res, 0);
 
-    // recv_segment() after on_fin() - FINISHED state drops further segments
-    std::string late = "late";
-    EXPECT_EQ(rs.recv_segment(fin, (uint8_t*)late.data(), late.size()), -1);
+    EXPECT_EQ(rs.get_acknum(), acknum_after_seg1 + 3); // only "dog" is new
+    EXPECT_EQ(rs.get_num_ready_bytes(), ready_after_seg1 + 3);
+
+    std::string out = read_n(rs, ready_after_seg1 + 3);
+    EXPECT_EQ(out, "hellodog");
+
+    // on_fin_recv with bad fin value - postcondition fails, connection not finished
+    uint64_t bad_fin = rs.get_acknum() + 100;
+    res = rs.on_fin_recv(bad_fin);
+    EXPECT_EQ(res, -1);
+    EXPECT_FALSE(rs.is_finished());
+}
+
+TEST(recv_stream_test, ops_before_syn_and_ops_after_fin) {
+    recv_stream rs(TEST_CAPACITY);
+    int64_t res;
+    uint8_t dest_buffer[16];
+
+    // recv_segment/read before syn
+    std::string early = "oops";
+    res = rs.recv_segment(200, (uint8_t*)early.c_str(), early.size());
+    EXPECT_EQ(res, -1); // not yet ESTABLISHED
+
+    res = rs.read(early.size(), dest_buffer);
+    EXPECT_EQ(res, 0); // nothing ready yet
+
+    // establish, recv a segment, then finish
+    uint64_t irs = 100;
+    res = rs.on_syn_recv(irs);
+    EXPECT_EQ(res, 0);
+
+    std::string seg1 = "hello";
+    uint64_t seqnum = irs + 1;
+    res = rs.recv_segment(seqnum, (uint8_t*)seg1.c_str(), seg1.size());
+    EXPECT_EQ(res, 0);
+    seqnum += seg1.size();
+
+    seqnum += 1; // fin consumes 1 seqnum
+    res = rs.on_fin_recv(seqnum);
+    EXPECT_EQ(res, 0);
+    EXPECT_TRUE(rs.is_finished());
+
+    // recv_segment after fin should fail - no longer ESTABLISHED
+    res = rs.recv_segment(seqnum, (uint8_t*)early.c_str(), early.size());
+    EXPECT_EQ(res, -1);
+
+    // read after fin should still return previously-buffered bytes
+    std::string out = read_n(rs, seg1.size());
+    EXPECT_EQ(out, seg1);
+
+    res = rs.read(1, dest_buffer);
+    EXPECT_EQ(res, 0); // fully drained
 }

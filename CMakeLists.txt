@@ -5,16 +5,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(GTest REQUIRED)
 enable_testing()
 
+file(GLOB SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
+
 #######################################################################################
 ## listen
 #######################################################################################
 
-file(GLOB SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
-add_executable(listen ${SOURCES})
+## add_executable(listen ${SOURCES})
 
 ## include libevent 
-target_include_directories(listen PRIVATE /usr/include)
-target_link_libraries(listen PRIVATE /usr/lib/x86_64-linux-gnu/libevent.so)
+## target_include_directories(listen PRIVATE /usr/include)
+## target_link_libraries(listen PRIVATE /usr/lib/x86_64-linux-gnu/libevent.so)
 
 #######################################################################################
 ## unit tests
