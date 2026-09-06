@@ -236,6 +236,16 @@ void send_stream::on_retransmission_timeout() {
     cong_->on_rto();
 }
 
+std::string send_stream::to_string(state s) {
+    switch (s) {
+        case state::ESTABLISHED: return "ESTABLISHED";
+        case state::FIN_PENDING: return "FIN_PENDING";
+        case state::FIN_SENT:    return "FIN_SENT";
+        case state::FINISHED:    return "FINISHED";
+    }
+    return "UNKNOWN";
+}
+
 std::string send_stream::to_string() {
     std::ostringstream oss;
     oss << "send_stream" << "\n";

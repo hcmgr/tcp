@@ -183,6 +183,15 @@ uint64_t recv_stream::get_num_free_space_bytes() {
     return (((rd_pos_ + capacity) - furthest_pos) % capacity) - 1;
 }
 
+std::string recv_stream::to_string(state s) {
+    switch (s) {
+        case state::SYN_WAITING: return "SYN_WAITING";
+        case state::ESTABLISHED: return "ESTABLISHED";
+        case state::FINISHED:    return "FINISHED";
+    }
+    return "UNKNOWN";
+}
+
 std::string recv_stream::to_string() {
     std::ostringstream oss;
     oss << "recv_stream" << "\n";

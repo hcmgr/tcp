@@ -107,13 +107,5 @@ private:
     // increment circ-buffer position `pos` by `n`
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
 
-    static std::string to_string(state s) {
-        switch (s) {
-            case state::ESTABLISHED: return "ESTABLISHED";
-            case state::FIN_PENDING: return "FIN_PENDING";
-            case state::FIN_SENT:    return "FIN_SENT";
-            case state::FINISHED:    return "FINISHED";
-        }
-        return "UNKNOWN";
-    }
+    static std::string to_string(state s);
 };

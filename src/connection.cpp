@@ -130,7 +130,7 @@ int64_t connection::read(uint64_t n, uint8_t *dest_buffer) {
         std::unique_lock<std::mutex> ul(pending_read_mtx_);
         pending_read_cv_.wait(ul, [&] {
             uint64_t ready = recv_stream_->get_num_ready_bytes();
-            return ready < n;
+            return ready >= n;
         });
     }
 
@@ -168,17 +168,19 @@ int64_t connection::write(uint64_t n, uint8_t *src_buffer) {
 
 int64_t connection::close() {
     if (!(state_ == tcp_state::ESTABLISHED || state_ == tcp_state::CLOSE_WAIT)) {
-        Log(level::ERROR, std::format("close() in invalid state - {}", to_string(state_)));
+        Log(level::ERROR, std::format("close() - called in invalid state - {}", to_string(state_)));
         reset();
         return -1;
     }
 
+    // route fin to send_stream, which will send it at its leisure
     auto res = send_fin();
     if (res < 0) {
         reset();
         return -1;
     }
 
+    // state transition
     if (state_ == tcp_state::ESTABLISHED) {
         state_ = tcp_state::FIN_WAIT_1;
     }
@@ -186,8 +188,22 @@ int64_t connection::close() {
         state_ = tcp_state::LAST_ACK;
     } 
     else {
-        throw std::runtime_error(std::format("close() - unreachable state - {}", to_string(state_)));
+        throw std::runtime_error(std::format("close() - reached unreachable state - {}", to_string(state_)));
     }
+
+    // Block until reached either CLOSED or TIME_WAIT state.
+    //
+    // In CLOSED state, our resources are fully cleaned up, and the ref tcp_conn holds can safely
+    // be let go. Owning manager will have already let its ref go.
+    //
+    // In TIME_WAIT state, we're waiting our TIME_WAIT_TIMEOUT_MS in case we must retx the ack of 
+    // peer's fin. Owning manager will still hold the ref until its destroyed; so tcp_conn can
+    // safely let its ref go.
+    //
+    std::unique_lock<std::mutex> ul(pending_close_mtx_);
+    pending_close_cv_.wait(ul, [&] {
+        return state_ == tcp_state::CLOSED || state_ == tcp_state::TIME_WAIT;
+    });
 
     return 0;
 }

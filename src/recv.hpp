@@ -63,12 +63,5 @@ public:
 private:
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
 
-    static std::string to_string(state s) {
-        switch (s) {
-            case state::SYN_WAITING: return "SYN_WAITING";
-            case state::ESTABLISHED: return "ESTABLISHED";
-            case state::FINISHED:    return "FINISHED";
-        }
-        return "UNKNOWN";
-    }
+    static std::string to_string(state s);
 };
