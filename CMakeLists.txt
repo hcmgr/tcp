@@ -24,13 +24,13 @@ file(GLOB SOURCES "${CMAKE_SOURCE_DIR}/src/*.cpp")
 ## sources, excluding main.cpp
 set(UNIT_TEST_SOURCES ${SOURCES})
 list(REMOVE_ITEM UNIT_TEST_SOURCES "${CMAKE_SOURCE_DIR}/src/main.cpp")
-file(GLOB UNIT_TEST_FILES "${CMAKE_SOURCE_DIR}/test/*_test.cpp")
+file(GLOB UNIT_TEST_FILES "${CMAKE_SOURCE_DIR}/test/*.cpp")
 
 add_executable(unit_tests ${UNIT_TEST_SOURCES} ${UNIT_TEST_FILES})
 
 ## include libevent and gtest
 target_include_directories(unit_tests PRIVATE /usr/include)
-target_link_libraries(unit_tests PRIVATE /usr/lib/x86_64-linux-gnu/libevent.so GTest::gtest GTest::gtest_main)
+target_link_libraries(unit_tests PRIVATE /usr/lib/x86_64-linux-gnu/libevent.so /usr/lib/x86_64-linux-gnu/libevent_pthreads.so GTest::gtest GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(unit_tests)
 

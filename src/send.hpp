@@ -4,6 +4,7 @@
 #include <functional>
 #include <memory>
 #include <sstream>
+#include <cassert>
 
 #include <event2/event.h>
 

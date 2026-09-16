@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <thread>
 #include <event2/event.h>
+#include <event2/thread.h>
 #include <memory>
 
 #include "connection.hpp"
@@ -66,6 +67,10 @@ public:
 
 private:
     void start_event_loop() {
+        if (evthread_use_pthreads() < 0) {
+            throw std::runtime_error("evthread_use_pthreads() failed");
+        }
+
         event_base_ = event_base_new();
         if (!event_base_) {
             throw std::runtime_error("event_base null on creation");
@@ -83,11 +88,12 @@ private:
         // Given we're at the end of our process here, not much else we can do.
         active_connections_.clear();
 
-        // stop and free event loop
+        // stop event loop and worker thread
+        event_base_loopbreak(event_base_);
+        worker_.join();
+
+        // free event loop
         event_base_free(event_base_);
         event_base_ = nullptr;
-
-        // stop worker thread
-        worker_.join();
     }
 };

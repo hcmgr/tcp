@@ -24,7 +24,7 @@ recv_stream::~recv_stream() {
 
 int64_t recv_stream::recv_segment(uint64_t seqnum, uint8_t *payload_ptr, uint64_t payload_size) {
     if (state_ != state::ESTABLISHED) {
-        Log(level::ERROR, "recv_segment() not in ESTABLISHED state - dropping");
+        Log(level::ERROR, "recv_segment() not in ESTABLISHED state - invalid");
         return -1;
     }
 
@@ -104,6 +104,11 @@ int64_t recv_stream::read(uint64_t n, uint8_t *dest_buffer) {
         return -1;
     }
 
+    if (state_ != state::ESTABLISHED) {
+        Log(level::ERROR, "read() not in ESTABLISHED state - invalid");
+        return -1;
+    }
+
     uint64_t ready_to_read = get_num_ready_bytes();
     if (ready_to_read <= 0) {
         return 0;
@@ -136,6 +141,7 @@ int64_t recv_stream::on_fin_recv(uint64_t fin) {
         Log(level::ERROR, "on_fin_recv() not in ESTABLISHED state - dropping");
         return -1;
     }
+
     nxt_ += 1;
     fin_ = fin;
     if (nxt_ != fin_) {

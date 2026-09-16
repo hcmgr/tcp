@@ -191,14 +191,15 @@ timeout_handler::timeout_handler(uint32_t timeout_ms, event_callback_fn cb, void
 {
     ev = event_new(manager::get_instance().get_event_base(), -1, EV_TIMEOUT, cb, arg);
     if (ev == nullptr) {
-        clear();
-        return;
+        Log(level::ERROR, "timeout_handler event_new() failed");
     }
-
-    active = true;
 }
 
-timeout_handler::~timeout_handler() { clear(); }
+timeout_handler::~timeout_handler() {
+    if (ev != nullptr) {
+        event_free(ev);
+    }
+}
 
 int64_t timeout_handler::add() {
     if (active) {
@@ -220,8 +221,7 @@ int64_t timeout_handler::add() {
 }
 
 void timeout_handler::clear() {
-    event_free(ev);
-    ev = nullptr;
+    event_del(ev);
     active = false;
 }
 
