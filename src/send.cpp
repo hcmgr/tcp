@@ -71,7 +71,7 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         // old ack - silently ignore
         return 0;
     }
-    if (state_ == state::FIN_SENT && acknum > fin_) {
+    if (state_ == state::FIN_SENT && acknum > fin_ + 1) {
         // ack'd beyond fin - invalid
         Log(level::ERROR, std::format("acknum ({}) > fin ({}), i.e. peer ack'd beyond fin", acknum, fin_));
         return -1;
@@ -116,7 +116,6 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     // advance una, popping segments of our in-flight-queue as necessary
     while (!in_flight_segments_.empty()) {
         segment &seg = in_flight_segments_.front();
-        Log(level::INFO, std::format("{}", seg.seqnum));
         if (acknum < seg.seqnum) {
             // all now-acked in-flight-segments removed - stop
             break;
@@ -127,7 +126,6 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
             seg.seqnum += diff;
             seg.payload_len -= diff;
             seg.payload_pos = inc(seg.payload_pos, diff);
-            Log(level::INFO, "partial");
             break;
         } 
         else {
@@ -146,12 +144,12 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // check if peer has ack'd our fin
     if (state_ == state::FIN_SENT) {
-        if (una_ > fin_) {
+        if (una_ > fin_ + 1) {
             Log(level::ERROR, std::format("una ({}) > fin ({}), i.e. peer ack'd beyond fin", una_, fin_));
             return -1;
         } 
-        else if (una_ == fin_) {
-            if (!(una_ == nxt_ && in_flight_segments_.empty())) {
+        else if (una_ == fin_ + 1) {
+            if (!in_flight_segments_.empty()) {
                 Log(level::ERROR, "peer ack'd our fin, yet we still have in-flight bytes");
                 return -1;
             }
@@ -326,7 +324,8 @@ int64_t send_stream::send_ready_bytes() {
         nxt_ += payload_len;
         nxt_pos_ = inc(nxt_pos_, payload_len);
         if (sending_fin) {
-            fin_ = nxt_ + 1;
+            nxt_ += 1;
+            fin_ = nxt_;
             state_ = state::FIN_SENT;
         }
     }
