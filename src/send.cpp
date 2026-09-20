@@ -141,14 +141,11 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         una_pos_ = inc(una_pos_, acknum - una_);
     }
     una_ = acknum;
+    
 
     // check if peer has ack'd our fin
     if (state_ == state::FIN_SENT) {
-        if (una_ > fin_ + 1) {
-            Log(level::ERROR, std::format("una ({}) > fin ({}), i.e. peer ack'd beyond fin", una_, fin_));
-            return -1;
-        } 
-        else if (una_ == fin_ + 1) {
+        if (acknum == fin_ + 1) {
             if (!in_flight_segments_.empty()) {
                 Log(level::ERROR, "peer ack'd our fin, yet we still have in-flight bytes");
                 return -1;
@@ -156,10 +153,6 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
             // peer validly ack'd fin - finish stream
             state_ = state::FINISHED;
-
-        } 
-        else {
-            // yet to ack our fin - keep waiting
         }
     }
 
@@ -324,8 +317,8 @@ int64_t send_stream::send_ready_bytes() {
         nxt_ += payload_len;
         nxt_pos_ = inc(nxt_pos_, payload_len);
         if (sending_fin) {
-            nxt_ += 1;
             fin_ = nxt_;
+            nxt_ += 1;
             state_ = state::FIN_SENT;
         }
     }

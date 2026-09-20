@@ -219,6 +219,8 @@ TEST(send_stream_test, normal_send) {
     EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
     EXPECT_TRUE(sent_segments.empty());
 
+    std::cout << "10: " << ss.to_string() << "\n";
+
     //
     // write M bytes
     //
@@ -236,17 +238,19 @@ TEST(send_stream_test, normal_send) {
     seqnum += m;
     sent_segments.clear();
 
+    std::cout << "11: " << ss.to_string() << "\n";
+
     //
     // peer acks those bytes
     //
     acknum += m;
+    std::cout << "sending acknum - " << acknum << "\n";
     res = ss.on_ack_recv(acknum);
-    std::cout << "acknum is currently: " << acknum << "\n";
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0u);
     EXPECT_TRUE(sent_segments.empty());
 
-    std::cout << "10: " << ss.to_string() << "\n";
+    std::cout << "12: " << ss.to_string() << "\n";
 
     //
     // send fin - standalone, no attached bytes
@@ -254,7 +258,7 @@ TEST(send_stream_test, normal_send) {
     res = ss.send_fin();
     EXPECT_EQ(res, 0);
 
-    std::cout << "11: " << ss.to_string() << "\n";
+    std::cout << "13: " << ss.to_string() << "\n";
 
     ASSERT_EQ(sent_segments.size(), 1u);
     EXPECT_EQ(sent_segments[0].seqnum, seqnum);
@@ -269,11 +273,11 @@ TEST(send_stream_test, normal_send) {
     // peer acks the fin - stream should be finished
     //
     acknum += 1;
-    std::cout << "12: " << ss.to_string() << "\n";
+    std::cout << "sending acknum - " << acknum << "\n";
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_TRUE(ss.is_finished());
-    std::cout << "13: " << ss.to_string() << "\n";
+    std::cout << "14: " << ss.to_string() << "\n";
 }
 
 TEST(send_stream_test, trip_dup_ack) {
