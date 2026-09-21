@@ -30,9 +30,9 @@ private:
     std::deque<segment> pending_segments_;
 
     enum class state {
-        SYN_WAITING,
-        ESTABLISHED,
-        FINISHED
+        SYN_WAITING,            // waiting for peer's syn, to set our irs
+        ESTABLISHED,            // established, can freely receive
+        FINISHED                // finished, done receiving
     };
     state state_;
 

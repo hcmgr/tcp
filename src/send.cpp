@@ -26,7 +26,7 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
         libevent_on_retransmission_timeout,
         this);
 
-    state_ = state::ESTABLISHED;
+    state_ = state::SYN_PENDING;
 }
 
 send_stream::~send_stream() {}
@@ -61,6 +61,10 @@ int64_t send_stream::write(uint64_t n, uint8_t *src_buffer) {
 }
 
 int64_t send_stream::on_ack_recv(uint64_t acknum) {
+    if (state_ == state::SYN_PENDING) {
+        Log(level::ERROR, "on_ack_recv in SYN_PENDING state - invalid");
+        return -1;
+    }
     if (state_ == state::FINISHED) {
         // silently drop any acks after send stream finished
         return 0;
@@ -188,7 +192,7 @@ int64_t send_stream::send_syn_impl(uint16_t flags_) {
     // Send syn on fast path (i.e. not via send_ready_bytes()), as we know
     // it goes out alone and immediately.
     //
-    if (state_ != state::ESTABLISHED) {
+    if (state_ != state::SYN_PENDING) {
         return -1;
     }
 
@@ -201,7 +205,9 @@ int64_t send_stream::send_syn_impl(uint16_t flags_) {
     if (buffer_segment_for_retransmission(segment{nxt_, flags, nxt_pos_, 0}) < 0) {
         return -1;
     }
+
     nxt_ += 1;
+    state_ = state::ESTABLISHED;
 
     return 0;
 }
@@ -253,6 +259,7 @@ void send_stream::on_retransmission_timeout() {
 
 std::string send_stream::to_string(state s) {
     switch (s) {
+        case state::SYN_PENDING: return "SYN_PENDING";
         case state::ESTABLISHED: return "ESTABLISHED";
         case state::FIN_PENDING: return "FIN_PENDING";
         case state::FIN_SENT:    return "FIN_SENT";

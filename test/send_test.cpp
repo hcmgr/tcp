@@ -399,3 +399,441 @@ TEST(send_stream_test, trip_dup_ack) {
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
 }
+
+// test rto triggers re-tx of oldest un-ack'd segment
+TEST(send_stream_test, rto) {
+    sent_segments.clear();
+    uint64_t capacity = 4096;
+    send_stream ss(capacity, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
+
+    //
+    // send syn, peer ack's syn (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // send 2 segments, N and M bytes, both get dropped, nothing sends until rto
+    //
+    uint64_t n = 10;
+    std::string data_n(n, 'n');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+
+    uint64_t m = 15;
+    std::string data_m(m, 'm');
+    res = ss.write(m, (uint8_t*)data_m.c_str());
+    EXPECT_EQ(res, (int64_t)m);
+
+    EXPECT_EQ(sent_segments.size(), 2);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), n + m);
+
+    //
+    // rto fires - expect re-tx of first segment only
+    //
+    ss.on_retransmission_timeout();
+
+    EXPECT_EQ(sent_segments.size(), 3);
+    EXPECT_EQ(sent_segments[2].seqnum, seqnum);
+    EXPECT_EQ(sent_segments[2].flags, ack_mask);
+    ASSERT_EQ(sent_segments[2].payload.size(), n);
+    EXPECT_EQ(std::memcmp(sent_segments[2].payload.data(), data_n.data(), n), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), n + m);
+
+    seqnum += n;
+
+    //
+    // peer acks the first segment
+    //
+    acknum += n;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), m);
+
+    //
+    // rto fires again - expect re-tx of second segment
+    //
+    ss.on_retransmission_timeout();
+
+    EXPECT_EQ(sent_segments.size(), 4);
+    EXPECT_EQ(sent_segments[3].seqnum, seqnum);
+    EXPECT_EQ(sent_segments[3].flags, ack_mask);
+    ASSERT_EQ(sent_segments[3].payload.size(), m);
+    EXPECT_EQ(std::memcmp(sent_segments[3].payload.data(), data_m.data(), m), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), m);
+
+    //
+    // peer acks the second segment
+    //
+    acknum += m;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
+}
+
+// test sends being truncated by peer's recv window
+TEST(send_stream_test, send_limited_by_recv_window) {
+    sent_segments.clear();
+    uint64_t capacity = 4096;
+    send_stream ss(capacity, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
+
+    //
+    // send syn, peer ack's syn (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // recv window M, write N > M, expect only M sent
+    //
+    uint64_t m = 100;
+    ss.set_peer_recv_window(m);
+
+    uint64_t n = 250;
+    std::string data_n(n, 'n');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    EXPECT_EQ(sent_segments[0].flags, ack_mask);
+    ASSERT_EQ(sent_segments[0].payload.size(), m);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data(), m), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), m);
+    EXPECT_EQ(ss.get_num_ready_bytes(), n - m);
+
+    seqnum += m;
+    sent_segments.clear();
+
+    //
+    // peer acks those M bytes - expect next M sent
+    //
+    acknum += m;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    ASSERT_EQ(sent_segments[0].payload.size(), m);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + m, m), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), m);
+    EXPECT_EQ(ss.get_num_ready_bytes(), n - 2 * m);
+
+    seqnum += m;
+    sent_segments.clear();
+
+    //
+    // peer acks those M bytes - expect remaining N - 2M sent
+    //
+    acknum += m;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    ASSERT_EQ(sent_segments[0].payload.size(), n - 2 * m);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + 2 * m, n - 2 * m), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), n - 2 * m);
+    EXPECT_EQ(ss.get_num_ready_bytes(), 0);
+
+    seqnum += (n - 2 * m);
+    sent_segments.clear();
+
+    acknum += (n - 2 * m);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
+    EXPECT_TRUE(sent_segments.empty());
+
+    //
+    // recv window M, K < M bytes in-flight, write N > (M - K), expect only (M - K) sent (total M bytes in-flight)
+    //
+    uint64_t k = 40;
+    std::string data_k(k, 'k');
+    res = ss.write(k, (uint8_t*)data_k.c_str());
+    EXPECT_EQ(res, (int64_t)k);
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), k);
+
+    seqnum += k;
+    sent_segments.clear();
+
+    n = 150;
+    data_n = std::string(n, 'N');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    ASSERT_EQ(sent_segments[0].payload.size(), m - k);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data(), m - k), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), m);
+    EXPECT_EQ(ss.get_num_ready_bytes(), n - (m - k));
+
+    seqnum += (m - k);
+    sent_segments.clear();
+
+    //
+    // re-open recv window, peer acks the K bytes - expect rest of N sent
+    //
+    ss.set_peer_recv_window(UINT16_MAX);
+    acknum += k;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    ASSERT_EQ(sent_segments[0].payload.size(), n - (m - k));
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + (m - k), n - (m - k)), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), n);
+    EXPECT_EQ(ss.get_num_ready_bytes(), 0);
+
+    sent_segments.clear();
+
+    acknum += n;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
+    EXPECT_TRUE(sent_segments.empty());
+}
+
+// test sends being truncated by congestion window (see cong_test.cpp for full cong UT)
+TEST(send_stream_test, send_limited_by_cong_window) {
+    sent_segments.clear();
+    uint64_t capacity = SEND_BUFFER_CAPACITY;
+    send_stream ss(capacity, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
+
+    //
+    // send syn, peer ack's syn (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // write N > cwnd bytes, expect cwnd bytes sent and (N - cwnd) bytes waiting
+    //
+    uint64_t cwnd = INIT_CWND + MSS;
+    uint64_t n = cwnd + 500;
+    std::string data_n(n, 'c');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+
+    uint64_t num_segments = cwnd / MSS;
+    ASSERT_EQ(sent_segments.size(), num_segments);
+    for (uint64_t i = 0; i < num_segments; i++) {
+        EXPECT_EQ(sent_segments[i].seqnum, seqnum + i * MSS);
+        EXPECT_EQ(sent_segments[i].flags, ack_mask);
+        EXPECT_EQ(sent_segments[i].payload.size(), (uint64_t)MSS);
+    }
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), cwnd);
+    EXPECT_EQ(ss.get_num_ready_bytes(), n - cwnd);
+
+    seqnum += cwnd;
+    sent_segments.clear();
+
+    //
+    // peer acks one segment - slow start grows cwnd by MSS, so expect 2 more segments sent
+    //
+    acknum += MSS;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 2);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    EXPECT_EQ(sent_segments[0].payload.size(), (uint64_t)MSS);
+    EXPECT_EQ(sent_segments[1].seqnum, seqnum + MSS);
+    EXPECT_EQ(sent_segments[1].payload.size(), (uint64_t)MSS);
+
+    uint64_t num_sent = cwnd + 2 * MSS;
+    cwnd += MSS;
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), cwnd);
+    EXPECT_EQ(ss.get_num_ready_bytes(), n - num_sent);
+
+    seqnum += 2 * MSS;
+    sent_segments.clear();
+
+    //
+    // peer acks all sent bytes - expect remaining bytes sent
+    //
+    acknum += (num_sent - MSS);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    ASSERT_EQ(sent_segments[0].payload.size(), n - num_sent);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + num_sent, n - num_sent), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), n - num_sent);
+    EXPECT_EQ(ss.get_num_ready_bytes(), 0);
+
+    sent_segments.clear();
+
+    acknum += (n - num_sent);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
+    EXPECT_TRUE(sent_segments.empty());
+}
+
+// test public api calls in invalid states
+TEST(send_stream_test, ops_in_bad_states) {
+    sent_segments.clear();
+    uint64_t capacity = 4096;
+    int64_t res;
+
+    //
+    // fin before syn
+    //
+    {
+        send_stream ss(capacity, mock_send_segment);
+        ss.set_peer_recv_window(UINT16_MAX);
+
+        res = ss.send_fin();
+        EXPECT_EQ(res, -1);
+        EXPECT_TRUE(sent_segments.empty());
+    }
+    sent_segments.clear();
+
+    send_stream ss(capacity, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+
+    //
+    // send syn, peer ack's syn (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // close recv window, write N bytes + send fin ==> both stay queued
+    //
+    ss.set_peer_recv_window(0);
+    uint64_t n = 10;
+    std::string data_n(n, 'n');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+
+    res = ss.send_fin();
+    EXPECT_EQ(res, 0);
+    EXPECT_TRUE(sent_segments.empty());
+
+    //
+    // fin pending - write/fin/syn all rejected, ack beyond nxt rejected
+    //
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_fin();
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_syn();
+    EXPECT_EQ(res, -1);
+
+    res = ss.on_ack_recv(acknum + 1);
+    EXPECT_EQ(res, -1);
+
+    EXPECT_TRUE(sent_segments.empty());
+    EXPECT_EQ(ss.get_num_ready_bytes(), n);
+
+    //
+    // re-open recv window, ack triggers send of N bytes + fin (fin sent)
+    //
+    ss.set_peer_recv_window(UINT16_MAX);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    ASSERT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(sent_segments[0].seqnum, seqnum);
+    EXPECT_EQ(sent_segments[0].flags, (uint16_t)(ack_mask | fin_mask));
+    ASSERT_EQ(sent_segments[0].payload.size(), n);
+    sent_segments.clear();
+
+    //
+    // fin sent - write/fin/syn rejected, ack beyond fin rejected
+    //
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_fin();
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_syn();
+    EXPECT_EQ(res, -1);
+
+    res = ss.on_ack_recv(acknum + n + 2);
+    EXPECT_EQ(res, -1);
+
+    EXPECT_TRUE(sent_segments.empty());
+    EXPECT_FALSE(ss.is_finished());
+
+    //
+    // peer acks N bytes + fin - stream finished
+    //
+    acknum += (n + 1);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_TRUE(ss.is_finished());
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
+
+    //
+    // finished - write/fin/syn rejected, acks silently dropped
+    //
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_fin();
+    EXPECT_EQ(res, -1);
+
+    res = ss.send_syn();
+    EXPECT_EQ(res, -1);
+
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    res = ss.on_ack_recv(acknum + 100);
+    EXPECT_EQ(res, 0);
+
+    EXPECT_TRUE(sent_segments.empty());
+    EXPECT_TRUE(ss.is_finished());
+}

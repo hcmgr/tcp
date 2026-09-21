@@ -59,10 +59,11 @@ private:
     std::unique_ptr<timeout_handler> retransmission_timeout_;
 
     enum class state {
-        ESTABLISHED,
-        FIN_PENDING,
-        FIN_SENT,
-        FINISHED
+        SYN_PENDING,        // yet to send syn
+        ESTABLISHED,        // established, can freely send
+        FIN_PENDING,        // yet to send fin (its queued, waiting for other bytes)
+        FIN_SENT,           // sent fin, waiting for peer's ack of fin
+        FINISHED            // finished, done sending
     };
     state state_;
 
