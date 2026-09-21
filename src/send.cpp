@@ -138,14 +138,22 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
         }
     }
 
-    // advance una
-    if (acknum == iss_ + 1 || acknum == fin_ + 1) {
-        // syn or fin, don't advance una physical pos
-    } else {
+    // advance physical una
+    if (acknum == iss_  + 1) {
+        // syn - don't advance physical una
+    }
+    else if (acknum == fin_ + 1) {
+        // fin - only advance physical una if also ack'ing previous bytes
+        if (acknum > una_ + 1) {
+            una_pos_ = inc(una_pos_, acknum - 1 - una_);
+        }
+    }
+    else {
         una_pos_ = inc(una_pos_, acknum - una_);
     }
+
+    // advance logical una
     una_ = acknum;
-    
 
     // check if peer has ack'd our fin
     if (state_ == state::FIN_SENT) {
@@ -358,6 +366,7 @@ int64_t send_stream::retransmit_oldest_segment() {
     available_window += payload_len; // this seg shouldn't contribute to the window
     if (available_window <= 0) {
         // no available window, can't send now (next re-tx will send, i.e. on rto or dup-ack)
+        Log(level::INFO, "no available window to send re-tx");
         return 0;
     }
     if (payload_len > available_window) {

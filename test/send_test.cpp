@@ -68,8 +68,6 @@ cases
 #include "../src/send.hpp"
 #include "../src/manager.hpp"
 
-static const uint64_t TEST_CAPACITY = 4096;
-
 struct sent_segment {
     uint64_t seqnum;
     uint16_t flags;
@@ -92,14 +90,13 @@ int64_t mock_send_segment(uint64_t seqnum,
     return 0;
 }
 
-TEST(send_stream_test, normal_send) {
+// test syn -> many segments sent/ack'd -> standalone fin
+TEST(send_stream_test, send_many_segments) {
     sent_segments.clear();
-    send_stream ss(TEST_CAPACITY, mock_send_segment);
-    int64_t res;
-
-    EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
-
+    uint64_t capacity = 4096;
+    send_stream ss(capacity, mock_send_segment);
     ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
 
     //
     // send syn
@@ -135,7 +132,7 @@ TEST(send_stream_test, normal_send) {
     res = ss.write(n, (uint8_t*)data_n.c_str());
     EXPECT_EQ(res, (int64_t)n);
 
-    EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1 - n);
+    EXPECT_EQ(ss.get_num_free_space_bytes(), capacity - 1 - n);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), n);
     EXPECT_EQ(ss.get_num_ready_bytes(), 0u);
 
@@ -156,7 +153,7 @@ TEST(send_stream_test, normal_send) {
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), n - partial);
-    EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1 - (n - partial));
+    EXPECT_EQ(ss.get_num_free_space_bytes(), capacity - 1 - (n - partial));
     EXPECT_TRUE(sent_segments.empty());
 
     //
@@ -166,7 +163,7 @@ TEST(send_stream_test, normal_send) {
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0u);
-    EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
+    EXPECT_EQ(ss.get_num_free_space_bytes(), capacity - 1);
     EXPECT_TRUE(sent_segments.empty());
 
     //
@@ -203,7 +200,7 @@ TEST(send_stream_test, normal_send) {
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0u);
-    EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
+    EXPECT_EQ(ss.get_num_free_space_bytes(), capacity - 1);
     EXPECT_TRUE(sent_segments.empty());
 
     //
@@ -256,9 +253,71 @@ TEST(send_stream_test, normal_send) {
     EXPECT_TRUE(ss.is_finished());
 }
 
+// test fin tack'd onto last segment (rather than stand-alone segment)
+TEST(send_stream_test, fin_with_last_segment) {
+    sent_segments.clear();
+    uint64_t capacity = 4096;
+    send_stream ss(capacity, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
+
+    //
+    // send syn, peer ack's fin (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // a) set recv window to 0 to stop sending
+    // b) send segment with N > 0, so the bytes must buffer
+    // c) send a fin, which must then 'queue' behind those waiting bytes
+    //
+    ss.set_peer_recv_window(0);
+    uint64_t n = 10;
+    std::string data_n(n, 'n');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+    EXPECT_EQ(sent_segments.size(), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)0);
+
+    res = ss.send_fin();
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(sent_segments.size(), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)0);
+
+    //
+    // reset recv window to large value, send ack to trigger a send of ready bytes + our fin
+    //
+    ss.set_peer_recv_window(UINT16_MAX);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)10);
+
+    //
+    // ack the n segment bytes + the fin
+    //
+    acknum += (n + 1);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)0);
+    EXPECT_TRUE(ss.is_finished());
+}
+
+// test trip dup ack
 TEST(send_stream_test, trip_dup_ack) {
     sent_segments.clear();
-    send_stream ss(TEST_CAPACITY, mock_send_segment);
+    uint64_t capacity = 4096;
+    send_stream ss(capacity, mock_send_segment);
     ss.set_peer_recv_window(UINT16_MAX);
     int64_t res;
 
