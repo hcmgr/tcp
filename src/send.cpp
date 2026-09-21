@@ -136,7 +136,7 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // advance una
     if (acknum == iss_ + 1 || acknum == fin_ + 1) {
-        // syn or fin, don't advance una pos
+        // syn or fin, don't advance una physical pos
     } else {
         una_pos_ = inc(una_pos_, acknum - una_);
     }
@@ -171,12 +171,16 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     return 0;
 }
 
-int64_t send_stream::send_syn() {
+int64_t send_stream::send_syn_impl(uint16_t flags_) {
+    //
+    // Send syn on fast path (i.e. not via send_ready_bytes()), as we know
+    // it goes out alone and immediately.
+    //
     if (state_ != state::ESTABLISHED) {
         return -1;
     }
 
-    uint16_t flags = syn_mask;
+    uint16_t flags = flags_;
     auto res = send_segment_cb_(nxt_, flags, nullptr, 0);
     if (res < 0) {
         return -1;
@@ -190,23 +194,14 @@ int64_t send_stream::send_syn() {
     return 0;
 }
 
+int64_t send_stream::send_syn() {
+    uint16_t flags = syn_mask;
+    return send_syn_impl(flags);
+}
+
 int64_t send_stream::send_syn_ack() {
-    if (state_ != state::ESTABLISHED) {
-        return -1;
-    }
-
     uint16_t flags = syn_mask | ack_mask;
-    auto res = send_segment_cb_(nxt_, flags, nullptr, 0);
-    if (res < 0) {
-        return -1;
-    }
-
-    if (buffer_segment_for_retransmission(segment{nxt_, flags, nxt_pos_, 0}) < 0) {
-        return -1;
-    }
-    nxt_ += 1;
-
-    return 0;
+    return send_syn_impl(flags);
 }
 
 int64_t send_stream::send_fin() {
@@ -290,7 +285,7 @@ int64_t send_stream::send_ready_bytes() {
 
         uint16_t flags = ack_mask;
 
-        // for last segment - tack on pending fin
+        // fin pending - tack on fin if last segment to send
         bool sending_fin = false;
         if (state_ == state::FIN_PENDING && payload_len == ready_bytes) {
             flags |= fin_mask;

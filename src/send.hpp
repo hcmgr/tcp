@@ -108,5 +108,7 @@ private:
     // increment circ-buffer position `pos` by `n`
     uint64_t inc(uint64_t pos, uint64_t n) const { return (pos + n) % buffer_->capacity(); }
 
+    int64_t send_syn_impl(uint16_t flags);
+
     static std::string to_string(state s);
 };

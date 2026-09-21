@@ -70,6 +70,7 @@ cases
 
 static const uint64_t TEST_CAPACITY = 4096;
 
+
 struct sent_segment {
     uint64_t seqnum;
     uint16_t flags;

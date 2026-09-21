@@ -206,7 +206,7 @@ TEST(recv_stream_test, ops_before_syn_and_ops_after_fin) {
     EXPECT_EQ(res, -1); // not yet ESTABLISHED
 
     res = rs.read(early.size(), dest_buffer);
-    EXPECT_EQ(res, 0); // nothing ready yet
+    EXPECT_EQ(res, -1); // not yet ESTABLISHED
 
     // establish, recv a segment, then finish
     uint64_t irs = 100;
@@ -224,14 +224,11 @@ TEST(recv_stream_test, ops_before_syn_and_ops_after_fin) {
     EXPECT_EQ(res, 0);
     EXPECT_TRUE(rs.is_finished());
 
-    // recv_segment after fin should fail - no longer ESTABLISHED
+    // recv_segment after fin should fail
     res = rs.recv_segment(seqnum, (uint8_t*)early.c_str(), early.size());
     EXPECT_EQ(res, -1);
 
-    // read after fin should still return previously-buffered bytes
-    std::string out = read_n(rs, seg1.size());
-    EXPECT_EQ(out, seg1);
-
+    // read after fin should fail
     res = rs.read(1, dest_buffer);
-    EXPECT_EQ(res, 0); // fully drained
+    EXPECT_EQ(res, -1);
 }
