@@ -84,7 +84,10 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
 
     // check for triple-dup-ack
     auto &last_acks = dup_ack_.last_acks;
-    if (last_acks[0] == last_acks[1] && last_acks[1] == acknum) {
+    bool is_trip_dup_ack = last_acks[0] == last_acks[1] && 
+                           last_acks[1] == last_acks[2] && 
+                           last_acks[2] == acknum;
+    if (is_trip_dup_ack) {
         if (acknum > una_) {
             //
             // Fatal case.
@@ -108,7 +111,8 @@ int64_t send_stream::on_ack_recv(uint64_t acknum) {
     } 
     else {
         std::swap(last_acks[0], last_acks[1]);
-        last_acks[1] = acknum;
+        std::swap(last_acks[1], last_acks[2]);
+        last_acks[2] = acknum;
 
         cong_->on_ack();
     }
@@ -259,7 +263,7 @@ std::string send_stream::to_string() {
     oss << "nxt: " << nxt_ << ", nxt_pos: " << nxt_pos_ << "\n";
     oss << "fin: " << fin_ << "\n";
     oss << "num in-flight segments: " << in_flight_segments_.size() << "\n";
-    oss << "last acks: " << dup_ack_.last_acks[0] << " " << dup_ack_.last_acks[1] << "\n";
+    oss << "last acks: " << dup_ack_.last_acks[0] << " " << dup_ack_.last_acks[1] << " " << dup_ack_.last_acks[2] << "\n";
     oss << "rto: " << (retransmission_timeout_->active ? "active" : "inactive") << "\n";
     oss << "peer recv window: " << peer_recv_window_ << "\n";
     oss << "cong window: " << cong_->get_cwnd() << "\n";

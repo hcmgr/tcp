@@ -70,7 +70,6 @@ cases
 
 static const uint64_t TEST_CAPACITY = 4096;
 
-
 struct sent_segment {
     uint64_t seqnum;
     uint16_t flags;
@@ -102,8 +101,6 @@ TEST(send_stream_test, normal_send) {
 
     ss.set_peer_recv_window(UINT16_MAX);
 
-    std::cout << "1: " << ss.to_string() << "\n";
-
     //
     // send syn
     //
@@ -120,8 +117,6 @@ TEST(send_stream_test, normal_send) {
     seqnum += 1;
     sent_segments.clear();
 
-    std::cout << "2: " << ss.to_string() << "\n";
-
     //
     // peer ack's our syn
     //
@@ -131,7 +126,6 @@ TEST(send_stream_test, normal_send) {
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0u);
     EXPECT_TRUE(sent_segments.empty());
 
-    std::cout << "4: " << ss.to_string() << "\n";
 
     //
     // write N bytes (N < get_num_free_space_bytes())
@@ -140,8 +134,6 @@ TEST(send_stream_test, normal_send) {
     std::string data_n(n, 'x');
     res = ss.write(n, (uint8_t*)data_n.c_str());
     EXPECT_EQ(res, (int64_t)n);
-
-    std::cout << "5: " << ss.to_string() << "\n";
 
     EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1 - n);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), n);
@@ -167,8 +159,6 @@ TEST(send_stream_test, normal_send) {
     EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1 - (n - partial));
     EXPECT_TRUE(sent_segments.empty());
 
-    std::cout << "7: " << ss.to_string() << "\n";
-
     //
     // peer acks the rest of the bytes
     //
@@ -179,8 +169,6 @@ TEST(send_stream_test, normal_send) {
     EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
     EXPECT_TRUE(sent_segments.empty());
 
-    std::cout << "8: " << ss.to_string() << "\n";
-
     //
     // write MSS + 1 bytes - only MSS bytes fit in a single segment
     //
@@ -188,8 +176,6 @@ TEST(send_stream_test, normal_send) {
     std::string data_big(big_n, 'y');
     res = ss.write(big_n, (uint8_t*)data_big.c_str());
     EXPECT_EQ(res, (int64_t)big_n);
-
-    std::cout << "9: " << ss.to_string() << "\n";
 
     ASSERT_EQ(sent_segments.size(), 2u);
     EXPECT_EQ(sent_segments[0].seqnum, seqnum);
@@ -220,8 +206,6 @@ TEST(send_stream_test, normal_send) {
     EXPECT_EQ(ss.get_num_free_space_bytes(), TEST_CAPACITY - 1);
     EXPECT_TRUE(sent_segments.empty());
 
-    std::cout << "10: " << ss.to_string() << "\n";
-
     //
     // write M bytes
     //
@@ -239,27 +223,20 @@ TEST(send_stream_test, normal_send) {
     seqnum += m;
     sent_segments.clear();
 
-    std::cout << "11: " << ss.to_string() << "\n";
-
     //
     // peer acks those bytes
     //
     acknum += m;
-    std::cout << "sending acknum - " << acknum << "\n";
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0u);
     EXPECT_TRUE(sent_segments.empty());
-
-    std::cout << "12: " << ss.to_string() << "\n";
 
     //
     // send fin - standalone, no attached bytes
     //
     res = ss.send_fin();
     EXPECT_EQ(res, 0);
-
-    std::cout << "13: " << ss.to_string() << "\n";
 
     ASSERT_EQ(sent_segments.size(), 1u);
     EXPECT_EQ(sent_segments[0].seqnum, seqnum);
@@ -274,13 +251,92 @@ TEST(send_stream_test, normal_send) {
     // peer acks the fin - stream should be finished
     //
     acknum += 1;
-    std::cout << "sending acknum - " << acknum << "\n";
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_TRUE(ss.is_finished());
-    std::cout << "14: " << ss.to_string() << "\n";
 }
 
 TEST(send_stream_test, trip_dup_ack) {
+    sent_segments.clear();
+    send_stream ss(TEST_CAPACITY, mock_send_segment);
+    ss.set_peer_recv_window(UINT16_MAX);
+    int64_t res;
 
+    //
+    // send syn, peer ack's fin (successful handshake)
+    //
+    res = ss.send_syn();
+    EXPECT_EQ(res, 0);
+
+    uint64_t seqnum = sent_segments[0].seqnum;
+    uint64_t acknum = seqnum;
+    seqnum += 1;
+    sent_segments.clear();
+
+    acknum += 1;
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+
+    //
+    // send segment with N > 0 payload, this segment gets dropped
+    //
+    uint64_t n = 10;
+    std::string data_n(n, 'n');
+    res = ss.write(n, (uint8_t*)data_n.c_str());
+    EXPECT_EQ(res, (int64_t)n);
+    EXPECT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)n);
+
+    //
+    // first dup ack - expect no re-tx
+    //
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(sent_segments.size(), 1);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)n);
+
+    //
+    // send another segment with M > 0 payload, this segment arrives
+    //
+    uint64_t m = 15;
+    std::string data_m(m, 'm');
+    res = ss.write(m, (uint8_t*)data_m.c_str());
+    EXPECT_EQ(res, (int64_t)m);
+    EXPECT_EQ(sent_segments.size(), 2);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)(n + m));
+
+    //
+    // second dup ack - expect no re-tx
+    //
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(sent_segments.size(), 2);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)(n + m));
+
+    //
+    // send another segment with K > 0 payload, this segment arrives
+    //
+    uint64_t k = 20;
+    std::string data_k(k, 'k');
+    res = ss.write(k, (uint8_t*)data_k.c_str());
+    EXPECT_EQ(res, (int64_t)k);
+    EXPECT_EQ(sent_segments.size(), 3);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)(n + m + k));
+
+    //
+    // third dup ack - expect re-tx of oldest segment
+    //
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(sent_segments.size(), 4);                             
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), (int64_t)(n + m + k));
+
+    //
+    // ack all 3 segments, mocking that: re-tx of first segment worked, so now all 3 segments
+    // can be cumulatively acked
+    //
+    acknum += (n + m + k);
+    res = ss.on_ack_recv(acknum);
+    EXPECT_EQ(res, 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);
 }

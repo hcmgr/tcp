@@ -48,11 +48,11 @@ private:
     send_segment_cb send_segment_cb_;
 
     struct dup_ack {
-        // last 2 valid acks received (to detect triple-dup-ack).
+        // last 3 valid acks received (to detect triple-dup-ack).
         // 'valid' implies una <= acknum, otherwise we just drop it.
-        uint64_t last_acks[2];
+        std::array<uint64_t, 3> last_acks;
 
-        dup_ack() { last_acks[0] = 0; last_acks[1] = 0; }
+        dup_ack() { std::fill(last_acks.begin(), last_acks.end(), 0); }
     };
     dup_ack dup_ack_;
 
