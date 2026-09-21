@@ -69,6 +69,7 @@ private:
 
 public:
     send_stream(uint64_t capacity, send_segment_cb send_segment_cb);
+    send_stream(uint64_t capacity, send_segment_cb send_segment_cb, std::unique_ptr<congestion_controller> cong);
     ~send_stream();
 
 public:

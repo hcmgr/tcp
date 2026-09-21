@@ -36,11 +36,11 @@ private:
     int64_t ssthresh_;
 public:
     congestion_controller();
-    ~congestion_controller();
+    virtual ~congestion_controller();
 public:
-    int64_t on_ack();
-    int64_t on_triple_dup_ack();
-    int64_t on_rto();
+    virtual int64_t on_ack();
+    virtual int64_t on_triple_dup_ack();
+    virtual int64_t on_rto();
 public:
-    int64_t get_cwnd();
+    virtual int64_t get_cwnd();
 };

@@ -619,11 +619,24 @@ TEST(send_stream_test, send_limited_by_recv_window) {
     EXPECT_TRUE(sent_segments.empty());
 }
 
-// test sends being truncated by congestion window (see cong_test.cpp for full cong UT)
+struct mock_congestion_controller : public congestion_controller {
+    int64_t cwnd;
+
+    mock_congestion_controller(int64_t cwnd) : cwnd(cwnd) {}
+
+    int64_t on_ack() override { return cwnd; }
+    int64_t on_triple_dup_ack() override { return cwnd; }
+    int64_t on_rto() override { return cwnd; }
+    int64_t get_cwnd() override { return cwnd; }
+};
+
+// test sends being truncated by congestion window (cong mocked, see cong_test.cpp for UT of our real cong)
 TEST(send_stream_test, send_limited_by_cong_window) {
     sent_segments.clear();
-    uint64_t capacity = SEND_BUFFER_CAPACITY;
-    send_stream ss(capacity, mock_send_segment);
+    uint64_t capacity = 4096 * 4;
+    auto cong_ptr = std::make_unique<mock_congestion_controller>(3 * MSS);
+    mock_congestion_controller *cong = cong_ptr.get();
+    send_stream ss(capacity, mock_send_segment, std::move(cong_ptr));
     ss.set_peer_recv_window(UINT16_MAX);
     int64_t res;
 
@@ -643,65 +656,64 @@ TEST(send_stream_test, send_limited_by_cong_window) {
     EXPECT_EQ(res, 0);
 
     //
-    // write N > cwnd bytes, expect cwnd bytes sent and (N - cwnd) bytes waiting
+    // cwnd = 3 * MSS, write 5 * MSS bytes - expect only 3 segments sent
     //
-    uint64_t cwnd = INIT_CWND + MSS;
-    uint64_t n = cwnd + 500;
+    uint64_t n = 5 * MSS;
     std::string data_n(n, 'c');
     res = ss.write(n, (uint8_t*)data_n.c_str());
     EXPECT_EQ(res, (int64_t)n);
 
-    uint64_t num_segments = cwnd / MSS;
-    ASSERT_EQ(sent_segments.size(), num_segments);
-    for (uint64_t i = 0; i < num_segments; i++) {
+    ASSERT_EQ(sent_segments.size(), 3);
+    for (uint64_t i = 0; i < 3; i++) {
         EXPECT_EQ(sent_segments[i].seqnum, seqnum + i * MSS);
         EXPECT_EQ(sent_segments[i].flags, ack_mask);
-        EXPECT_EQ(sent_segments[i].payload.size(), (uint64_t)MSS);
+        ASSERT_EQ(sent_segments[i].payload.size(), (uint64_t)MSS);
+        EXPECT_EQ(std::memcmp(sent_segments[i].payload.data(), data_n.data() + i * MSS, MSS), 0);
     }
-    EXPECT_EQ(ss.get_num_in_flight_bytes(), cwnd);
-    EXPECT_EQ(ss.get_num_ready_bytes(), n - cwnd);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 3 * MSS);
+    EXPECT_EQ(ss.get_num_ready_bytes(), 2 * MSS);
 
-    seqnum += cwnd;
+    seqnum += 3 * MSS;
     sent_segments.clear();
 
     //
-    // peer acks one segment - slow start grows cwnd by MSS, so expect 2 more segments sent
+    // peer acks one segment, cwnd unchanged - expect 1 more segment sent
     //
     acknum += MSS;
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
 
-    ASSERT_EQ(sent_segments.size(), 2);
+    ASSERT_EQ(sent_segments.size(), 1);
     EXPECT_EQ(sent_segments[0].seqnum, seqnum);
-    EXPECT_EQ(sent_segments[0].payload.size(), (uint64_t)MSS);
-    EXPECT_EQ(sent_segments[1].seqnum, seqnum + MSS);
-    EXPECT_EQ(sent_segments[1].payload.size(), (uint64_t)MSS);
+    ASSERT_EQ(sent_segments[0].payload.size(), (uint64_t)MSS);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + 3 * MSS, MSS), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 3 * MSS);
+    EXPECT_EQ(ss.get_num_ready_bytes(), (uint64_t)MSS);
 
-    uint64_t num_sent = cwnd + 2 * MSS;
-    cwnd += MSS;
-    EXPECT_EQ(ss.get_num_in_flight_bytes(), cwnd);
-    EXPECT_EQ(ss.get_num_ready_bytes(), n - num_sent);
-
-    seqnum += 2 * MSS;
+    seqnum += MSS;
     sent_segments.clear();
 
     //
-    // peer acks all sent bytes - expect remaining bytes sent
+    // grow cwnd, peer acks one segment - expect remaining segment sent
     //
-    acknum += (num_sent - MSS);
+    cong->cwnd = 10 * MSS;
+    acknum += MSS;
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
 
     ASSERT_EQ(sent_segments.size(), 1);
     EXPECT_EQ(sent_segments[0].seqnum, seqnum);
-    ASSERT_EQ(sent_segments[0].payload.size(), n - num_sent);
-    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + num_sent, n - num_sent), 0);
-    EXPECT_EQ(ss.get_num_in_flight_bytes(), n - num_sent);
+    ASSERT_EQ(sent_segments[0].payload.size(), (uint64_t)MSS);
+    EXPECT_EQ(std::memcmp(sent_segments[0].payload.data(), data_n.data() + 4 * MSS, MSS), 0);
+    EXPECT_EQ(ss.get_num_in_flight_bytes(), 3 * MSS);
     EXPECT_EQ(ss.get_num_ready_bytes(), 0);
 
     sent_segments.clear();
 
-    acknum += (n - num_sent);
+    //
+    // peer acks all remaining bytes
+    //
+    acknum += 3 * MSS;
     res = ss.on_ack_recv(acknum);
     EXPECT_EQ(res, 0);
     EXPECT_EQ(ss.get_num_in_flight_bytes(), 0);

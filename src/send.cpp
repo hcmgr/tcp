@@ -3,7 +3,10 @@
 #include "event_loop.hpp"
 #include "manager.hpp"
 
-send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
+send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb)
+    : send_stream(capacity, send_segment_cb, std::make_unique<congestion_controller>()) {}
+
+send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb, std::unique_ptr<congestion_controller> cong) {
     iss_ = rng::generate_iss();
     una_ = iss_;
     nxt_ = iss_;
@@ -15,7 +18,7 @@ send_stream::send_stream(uint64_t capacity, send_segment_cb send_segment_cb) {
 
     buffer_ = std::make_unique<ring_buffer>(capacity);
 
-    cong_ = std::make_unique<congestion_controller>();
+    cong_ = std::move(cong);
 
     peer_recv_window_ = 0;
 
