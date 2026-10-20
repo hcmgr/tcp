@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <cstdint>
+#include <stdexcept>
 #include <thread>
 #include <event2/event.h>
 #include <event2/thread.h>

@@ -4,6 +4,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <algorithm>
+#include <cstring>
+#include <stdexcept>
 #include <unistd.h>
 
 #include "define.hpp"
@@ -104,6 +106,7 @@ public:
 
 private:
     void reset();
+    void teardown();
     tcp_header make_header(uint32_t seqnum, uint16_t flags, uint8_t *payload_ptr, uint64_t payload_len);
 
     int64_t process_segment_established(tcp_header &hdr, uint8_t *payload_ptr, uint64_t payload_len);

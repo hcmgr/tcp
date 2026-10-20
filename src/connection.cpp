@@ -17,8 +17,8 @@ connection::~connection() {
     // In all cases, connection should proactively destroy itself, and will notify
     // owning manager its destroyed. This is just in case.
     if (state_ != tcp_state::CLOSED) {
-        Log(level::ERROR, "destroy() called from destructor - this late indicates something's wrong");
-        destroy();
+        Log(level::ERROR, "teardown() called from destructor - this late indicates something's wrong");
+        teardown();
     }
 }
 
@@ -245,7 +245,8 @@ void connection::on_recv_segment()
         return;
     }
 
-    tcp_header hdr = (tcp_header)*segment;
+    tcp_header hdr;
+    std::memcpy(&hdr, segment, sizeof(hdr));
     uint8_t *payload_ptr = segment + sizeof(hdr);
     uint64_t payload_len = bytes_read - sizeof(hdr);
 
@@ -491,6 +492,11 @@ void connection::on_recv_segment()
             goto fail;
         }
     };
+
+    {
+        std::lock_guard<std::mutex> lg(pending_open_mtx_);
+    }
+    pending_open_cv_.notify_all();
     return;
 
 fail:
@@ -528,6 +534,11 @@ void connection::on_time_wait_timeout() {
 }
 
 void connection::destroy() {
+    teardown();
+    manager::get_instance().on_connection_destroy(id_);
+}
+
+void connection::teardown() {
     // remove and free recv segment event
     event_free(recv_segment_ev_);
     recv_segment_ev_ = nullptr;
@@ -543,9 +554,7 @@ void connection::destroy() {
     // rest of the state will free on RAII
     //
 
-    // move to closed state, and notify manager we validly closed
     state_ = tcp_state::CLOSED;
-    manager::get_instance().on_connection_destroy(id_);
 }
 
 void connection::reset() {
@@ -657,13 +666,13 @@ int64_t connection::send_fin() {
 }
 
 int64_t connection::send_ack() {
-    uint64_t seqnum = 0;
+    uint64_t seqnum = send_stream_->get_seqnum();
     uint16_t flags = ack_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }
 
 int64_t connection::send_rst() {
-    uint64_t seqnum = 0;
+    uint64_t seqnum = send_stream_->get_seqnum();
     uint16_t flags = rst_mask;
     return send_segment(seqnum, flags, nullptr, 0);
 }

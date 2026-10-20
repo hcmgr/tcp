@@ -1,8 +1,11 @@
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <ctime>
 #include <iostream>
 #include <random>
+#include <stdexcept>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -24,10 +27,16 @@ namespace net {
                           uint16_t dst_port) 
     {
         // create socket
-        int fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 17);
+        int fd = socket(AF_INET, SOCK_DGRAM, 17);
         if (fd == -1) {
             perror("socket");
             Log(level::ERROR, std::format("socket() - {}", strerror(errno)));
+            return -1;
+        }
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl == -1 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) == -1) {
+            Log(level::ERROR, std::format("fcntl() O_NONBLOCK - {}", strerror(errno)));
+            close(fd);
             return -1;
         }
 

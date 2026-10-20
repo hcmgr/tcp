@@ -1,4 +1,6 @@
 #pragma once
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -84,6 +86,7 @@ public:
     int64_t send_syn_ack();
     int64_t send_fin();
 
+    uint64_t get_seqnum() { return nxt_; }
     uint64_t get_num_in_flight_bytes();
     uint64_t get_num_ready_bytes();
     uint64_t get_num_free_space_bytes();
