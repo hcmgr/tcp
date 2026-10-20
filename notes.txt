@@ -1,0 +1,145 @@
+todo
+    - unit test send_stream 
+        - does partial-segment-ack logic break for tack-fin-on-last case? check it
+    - iron out what return values should be
+    - replace libevent with my own event loop (no dependencies son!)
+        - get claude to do this
+    
+    - thread concerns 
+        - maybe post things to event loop thread?
+        - locking/mutex concerns
+    - integration testing whole connection (everything except tcp_conn and manager)
+        - open opposing udp socket locally, send/recv segments to/from it
+        - test via an input/output paradigm:
+            - input = received tcp segments
+            - output = sent tcp segments
+    - tcp options parsing
+    - block comments describing send/recv streams
+
+keep in mind
+    - connection object should be the one that ultimately handles the error, i.e. 
+      on res < 0, tears down the connection -> send/recv_stream should just bubble these results up
+    - send_stream
+        - given that send() call can block, should have a libevent callback
+          on socket writeable, with payload_ptr and payload_size given to it
+    - edge case
+        - receive fin
+        - your pending_segments_ is non-empty, i.e. waiting of missing segment from peer
+
+testing
+    - integration tests main testing method
+        - normal pipeline tests that drive whole system
+        - prod tests / samples, e.g. video streaming
+        - fuzz tests (try break)
+    - UT for send_stream, recv_stream, cong_controller (i.e. nitty gritty stuff)
+        - go over the recv_stream ones again
+
+retransmission capability for send-side
+    - rto
+    - triple-dup-ack
+nagle
+    - delay sending segments if still unack'd data in-flight, wait for an ack to send it
+delayed ack
+    - try buffer the acks
+
+problem
+    - nagle AND delayed ack both enabled interact badly
+    - e.g.
+        - peer delaying ack
+        - you're nagle is waiting on that ack to send a segment
+
+tcp options
+    - full set
+        - EOL
+            - end of options list
+        - NOP
+            - padding
+        - MSS (syn only)
+            - mandatory to respect
+        - window scale (syn only)
+            - enabled if both specify
+        - SACK permitted (syn only)
+            - enabled if both specify
+        - SACK
+            - only meaningful is SACK enabled
+        - timestamp
+            - enabled if both specify
+    - start with MSS (only mandatory one, but still need to parse)
+
+rto
+    purpose
+        - connection-wide timer to trigger re-tx of oldest unack'd segment
+
+    on rto timeout
+        restart rto event
+        send oldest unack'd
+
+    on send_segment() (i.e. when we actually have an outgoing segment)
+        if oldest unack'd segment
+            start rto timer (it should not have been active, if so, error)
+
+    on ack
+        advance una
+        if rto active
+            restart rto for new oldest unack'd segment (if one exists)
+
+triple-dup-ack
+    purpose
+        - fast re-transmit mechanism (i.e. faster than rto)
+
+    on receive triple dup ack
+        (3 duplicates should be == una - i.e. we would have advanced una if they weren't)
+        send oldest segment
+
+delayed ack
+    purpose
+        - delay sending ack for Xms to maybe (a) piggyback on segment, or (b) buffer with other acks
+
+    on send_ack()
+        if ack timer active
+            cancel ack timer
+            send current cumulative ack
+        else
+            start ack timer for X ms
+    
+    on send_segment() (i.e. when we actually have an outgoing segment)
+        if ack timer active
+            cancel ack timer
+            (we're sending current acknum in our segment anyway)
+    
+    on ack timeout
+        send current cumulative ack
+        (implicitly should be no ready_bytes, otherwise they would've been sent 
+            and timer cancelled already)
+
+nagle
+    - if ready < MSS AND unack'd bytes in flight -> wait for ack to arrive before sending
+
+    
+Fast retransmit full example
+    [peer A sender, peer B receiver]
+    [peer A seqnum=0, peer B acknum=0]
+
+    peer A: send seqnum=0 (500), nxt -> 500, una -> 0
+    peer B: [packet dropped, e.g. network failure]
+
+    peer A: send seqnum=500 (500), nxt -> 1000, una -> 0
+    peer B: acknum 0
+
+    peer A: send seqnum=1000 (500), nxt -> 1500, una -> 0
+    peer B: acknum 0
+
+    peer A: 
+        [from last ack, triple-dup-ack, detected, retransmit oldest unack'd segment]
+        send seqnum=0 (500), nxt -> 1500, una -> 0
+    
+    peer B:
+        [has received seqnum=500-999 and seqnum=1000-1499 out-of-order validly]
+        [on receipt of seqnum=0-499, can now cumulatively ack it all]
+        acknum 1500
+    
+    peer A: send seqnum=1500 (500), nxt -> 2000, una -> 1500
+
+            
+            
+                
